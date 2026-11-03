@@ -164,6 +164,7 @@ struct Renderer::State {
     GLint alpha_cutoff = -1;
     GLuint white = 0;  // 1x1 texture for materials without a texture
     std::map<std::uint64_t, GLuint> textures;  // by Texture::id
+    std::size_t texture_bytes = 0;             // uploaded size of `textures`
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint fbo = 0;
@@ -394,11 +395,15 @@ LinearImage Renderer::render_linear(const Model& model, const Pose& pose, const 
                 const Texture& t = model.textures.at(static_cast<std::size_t>(draw.texture));
                 auto found = s.textures.find(t.id);
                 if (found == s.textures.end()) {
-                    // Keep a bounded number of textures uploaded.
-                    if (s.textures.size() >= 64) {
+                    // Keep at most 256 MiB of textures uploaded: models are
+                    // reloaded per atlas, and every load gets new ids.
+                    const std::size_t bytes = t.image.rgba.size();
+                    if (s.texture_bytes + bytes > (std::size_t{256} << 20)) {
                         for (const auto& entry : s.textures) glDeleteTextures(1, &entry.second);
                         s.textures.clear();
+                        s.texture_bytes = 0;
                     }
+                    s.texture_bytes += bytes;
                     found = s.textures.emplace(t.id, upload_texture(t.image, t.wrap_s, t.wrap_t)).first;
                 }
                 texture = found->second;
