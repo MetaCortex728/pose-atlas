@@ -32,6 +32,8 @@ struct AtlasJob {
     Profile profile;
     std::vector<SamplingSpec> actions;
     RenderSettings settings;
+    /// Where settings.palette came from, for the contract (may be empty).
+    std::string palette_path;
 };
 
 /// What happened to one (action, view) render.
@@ -50,6 +52,7 @@ struct Atlas {
     std::string profile_sha256;  // of profile_to_json(profile)
     RenderSettings settings;
     std::string settings_sha256;  // of render_settings_json(settings)
+    std::string palette_path;     // from the job
     std::string renderer;         // Renderer::description()
     // Layout.
     std::vector<SamplingPlan> plans;               // one per action, column order

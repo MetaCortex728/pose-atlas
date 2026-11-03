@@ -110,6 +110,7 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     const json contract = read_json(dir + "/pose-contract.json");
     CHECK(contract["sources"]["model"]["sha256"] == sha256_hex(read_file(rig_path())));
     CHECK(contract["sources"]["profile"]["id"] == "quarter-view-30-gltf");
+    CHECK_FALSE(contract["sources"].contains("palette"));
     CHECK(contract["actions"][1]["clocks"]["runtime"]["frame_cycle_ms"] == 800);
     CHECK(contract["frames"][8]["source_time_s"] == doctest::Approx(0.0));
     CHECK(contract["frames"][9]["source_time_s"] == doctest::Approx(0.1));
@@ -243,6 +244,21 @@ TEST_CASE("atlas: the content-hash cache re-renders only what changed") {
     // Render settings and the profile key every render.
     job.settings.style.outline = true;
     CHECK(reused(render_atlas(renderer, job, cache), "idle") == 0);
+    // So does the palette's content hash; the contract names the palette.
+    job.settings = {};
+    job.settings.palette = {{0x1a, 0x14, 0x1e}, {0xff, 0xff, 0xff}};
+    job.palette_path = "two.json";
+    const Atlas with_palette = render_atlas(renderer, job, cache);
+    CHECK(reused(with_palette, "idle") == 0);
+    CHECK(with_palette.renders[0].key != fourth.renders[0].key);
+    const std::string palette_dir = fresh_dir("atlas_palette_contract");
+    export_atlas(with_palette, palette_dir);
+    const json contract = read_json(palette_dir + "/pose-contract.json");
+    CHECK(contract["sources"]["palette"]["path"] == "two.json");
+    CHECK(contract["sources"]["palette"]["sha256"] == palette_sha256(job.settings.palette));
+    CHECK(contract["sources"]["palette"]["colors"] == json({"#1a141e", "#ffffff"}));
+    CHECK(contract["sources"]["render_settings"]["values"]["palette_sha256"] == palette_sha256(job.settings.palette));
+    job.palette_path.clear();
     job.settings = {};
     job.profile.resampling_filter = ResampleFilter::Box;
     CHECK(reused(render_atlas(renderer, job, cache), "idle") == 0);

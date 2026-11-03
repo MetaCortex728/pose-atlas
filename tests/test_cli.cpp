@@ -134,6 +134,9 @@ TEST_CASE("cli: render the rig's two actions and validate them") {
     CHECK(run_cli("render \"" + rig + "\" --actions idle --out x").exit_code == 2);
     CHECK(run_cli(base + " --poses walk=4").exit_code == 2);
     CHECK(run_cli(base + " --texture-filter trilinear").exit_code == 2);
+    const auto bad_palette = run_cli(base + " --palette /nonexistent/palette.json");
+    CHECK(bad_palette.exit_code == 1);
+    CHECK(bad_palette.output.find("/nonexistent/palette.json: cannot open file") != std::string::npos);
     CHECK(run_cli("render \"" + rig + "\" --profile \"" + profile + "\" --actions jump --out \"" + out + "\"")
               .exit_code == 1);
     CHECK(run_cli("validate").exit_code == 2);

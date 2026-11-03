@@ -117,14 +117,28 @@ std::string render_settings_json(const RenderSettings& settings) {
     nlohmann::ordered_json j;
     j["style"] = kRenderStyleName;
     j["outline"] = settings.style.outline;
-    char colour[8];
-    std::snprintf(colour, sizeof colour, "#%02x%02x%02x", settings.style.outline_colour[0],
-                  settings.style.outline_colour[1], settings.style.outline_colour[2]);
-    j["outline_colour"] = colour;
+    j["outline_colour"] = hex_colour(settings.style.outline_colour);
     j["texture_filter"] = to_string(settings.texture_filter);
+    j["palette_sha256"] = settings.palette.empty() ? nlohmann::ordered_json(nullptr)
+                                                   : nlohmann::ordered_json(palette_sha256(settings.palette));
     j["only_materials"] = settings.only_materials;
     j["hidden_materials"] = settings.hidden_materials;
     return j.dump();
+}
+
+std::vector<std::string> validate_render_settings(const RenderSettings& settings) {
+    std::vector<std::string> problems;
+    if (!settings.palette.empty()) {
+        if (settings.palette.size() < kMinPaletteColours || settings.palette.size() > kMaxPaletteColours) {
+            problems.push_back("the palette has " + std::to_string(settings.palette.size()) + " colours, not 2 to 256");
+        }
+        std::vector<Rgb8> sorted = settings.palette;
+        std::sort(sorted.begin(), sorted.end());
+        if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
+            problems.push_back("the palette repeats a colour");
+        }
+    }
+    return problems;
 }
 
 struct Renderer::State {

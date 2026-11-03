@@ -111,6 +111,8 @@ Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& c
             throw std::invalid_argument("action \"" + spec.action + "\" is listed twice");
         }
     }
+    const auto settings_problems = validate_render_settings(job.settings);
+    if (!settings_problems.empty()) throw std::invalid_argument("render settings: " + settings_problems.front());
     const std::vector<std::uint8_t> model_bytes = read_file(job.model_path);
     const Model model = load_gltf(model_bytes, job.model_path);
 
@@ -121,6 +123,7 @@ Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& c
     atlas.profile_sha256 = sha256_hex(profile_to_json(job.profile));
     atlas.settings = job.settings;
     atlas.settings_sha256 = sha256_hex(render_settings_json(job.settings));
+    atlas.palette_path = job.palette_path;
     atlas.renderer = renderer.description();
     for (const auto& spec : job.actions) {
         atlas.plans.push_back(plan_sampling(model, spec));
@@ -295,6 +298,13 @@ std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& dir
         {"profile", {{"id", p.id}, {"sha256", atlas.profile_sha256}, {"values", ordered_json::parse(profile_to_json(p))}}},
         {"render_settings",
          {{"sha256", atlas.settings_sha256}, {"values", ordered_json::parse(render_settings_json(atlas.settings))}}}};
+    if (!atlas.settings.palette.empty()) {
+        ordered_json colours = ordered_json::array();
+        for (const Rgb8& colour : atlas.settings.palette) colours.push_back(hex_colour(colour));
+        c["sources"]["palette"] = {{"path", atlas.palette_path},
+                                   {"sha256", palette_sha256(atlas.settings.palette)},
+                                   {"colors", colours}};
+    }
     c["cell"] = {p.cell_pixels, p.cell_pixels};
     c["pivot"] = {p.ground_pivot_pixels[0], p.ground_pivot_pixels[1]};
     c["meters_per_pixel"] = p.meters_per_pixel;

@@ -49,6 +49,8 @@ constexpr const char* kUsage =
     "      --outline                   one-pixel outline, hard edges\n"
     "      --texture-filter F          nearest (default) or bilinear base colour textures\n"
     "      --hide-material NAME        do not draw this material (repeatable)\n"
+    "      --palette FILE              palette: JSON {\"colors\": [\"#rrggbb\", ...]} or a PNG\n"
+    "                                  whose distinct opaque pixels are the colours (2 to 256)\n"
     "      --cache DIR | --no-cache    render cache (default <out>/cache)\n"
     "  validate <dir> [--report FILE]  check an exported directory against its contract\n"
     "  version                         print the version\n"
@@ -281,6 +283,8 @@ int render_command(const Args& args) {
             } catch (const std::invalid_argument& e) {
                 throw UsageError(std::string("--texture-filter: ") + e.what());
             }
+        } else if (option == "--palette") {
+            job.palette_path = value;
         } else if (option == "--hide-material") {
             job.settings.hidden_materials.push_back(value);
         } else if (option == "--cache") {
@@ -320,6 +324,7 @@ int render_command(const Args& args) {
     if (!counts.empty()) throw UsageError("--poses: '" + counts.begin()->first + "' is not in --actions");
 
     job.profile = pose_atlas::load_profile(profile_path);
+    if (!job.palette_path.empty()) job.settings.palette = pose_atlas::load_palette(job.palette_path).colours;
     std::filesystem::create_directories(out);
     if (!no_cache && cache.empty()) cache = (std::filesystem::path(out) / "cache").string();
 

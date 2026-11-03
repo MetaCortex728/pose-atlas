@@ -19,6 +19,7 @@
 #include "pose_atlas/camera.hpp"
 #include "pose_atlas/image.hpp"
 #include "pose_atlas/model.hpp"
+#include "pose_atlas/palette.hpp"
 #include "pose_atlas/profile.hpp"
 #include "pose_atlas/resample.hpp"
 
@@ -42,6 +43,8 @@ TextureFilter parse_texture_filter(const std::string& text);
 struct RenderSettings {
     RenderStyle style;
     TextureFilter texture_filter = TextureFilter::Nearest;
+    /// Palette colours (empty = no palette), recorded by content hash.
+    std::vector<Rgb8> palette;
     /// When not empty, draw only primitives with these material names.
     std::vector<std::string> only_materials;
     /// Never draw primitives with these material names.
@@ -52,8 +55,13 @@ struct RenderSettings {
 inline constexpr const char* kRenderStyleName = "flat-v2";
 
 /// Canonical JSON of the settings (stable key order), used for hashing and
-/// recorded in the contract.
+/// recorded in the contract. The palette appears as its content hash
+/// (palette_sha256), or null.
 std::string render_settings_json(const RenderSettings& settings);
+
+/// Problems with the settings; empty when they are valid. A palette needs 2
+/// to 256 distinct colours.
+std::vector<std::string> validate_render_settings(const RenderSettings& settings);
 
 class RenderError : public std::runtime_error {
 public:

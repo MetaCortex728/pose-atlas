@@ -58,6 +58,7 @@ add_library(pose_atlas STATIC
     src/gltf_loader.cpp
     src/image.cpp
     src/math.cpp
+    src/palette.cpp
     src/pose.cpp
     src/profile.cpp
     src/render.cpp
