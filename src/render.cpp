@@ -119,8 +119,10 @@ std::string render_settings_json(const RenderSettings& settings) {
     j["outline"] = settings.style.outline;
     j["outline_colour"] = hex_colour(settings.style.outline_colour);
     j["texture_filter"] = to_string(settings.texture_filter);
+    j["palette_stage"] = to_string(settings.palette_stage);
     j["palette_sha256"] = settings.palette.empty() ? nlohmann::ordered_json(nullptr)
                                                    : nlohmann::ordered_json(palette_sha256(settings.palette));
+    j["alpha_threshold"] = settings.alpha_threshold;
     j["only_materials"] = settings.only_materials;
     j["hidden_materials"] = settings.hidden_materials;
     return j.dump();
@@ -128,7 +130,14 @@ std::string render_settings_json(const RenderSettings& settings) {
 
 std::vector<std::string> validate_render_settings(const RenderSettings& settings) {
     std::vector<std::string> problems;
-    if (!settings.palette.empty()) {
+    const bool has_palette = !settings.palette.empty();
+    if (palette_active(settings) && !has_palette) {
+        problems.push_back("palette_stage " + to_string(settings.palette_stage) + " needs a palette");
+    }
+    if (!palette_active(settings) && has_palette) {
+        problems.push_back("a palette needs a palette_stage other than none");
+    }
+    if (has_palette) {
         if (settings.palette.size() < kMinPaletteColours || settings.palette.size() > kMaxPaletteColours) {
             problems.push_back("the palette has " + std::to_string(settings.palette.size()) + " colours, not 2 to 256");
         }
@@ -137,6 +146,9 @@ std::vector<std::string> validate_render_settings(const RenderSettings& settings
         if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
             problems.push_back("the palette repeats a colour");
         }
+    }
+    if (!(settings.alpha_threshold > 0.0 && settings.alpha_threshold <= 1.0)) {
+        problems.push_back("alpha_threshold must be in (0, 1]");
     }
     return problems;
 }
@@ -424,8 +436,19 @@ LinearImage Renderer::render_linear(const Model& model, const Pose& pose, const 
 
 Image Renderer::render(const Model& model, const Pose& pose, const Profile& profile, const CameraGuide& guide,
                        const RenderSettings& settings) {
-    Image cell = downsample(render_linear(model, pose, profile, guide, settings), profile.supersampling,
-                            profile.resampling_filter);
+    const auto problems = validate_render_settings(settings);
+    if (!problems.empty()) throw RenderError("render settings: " + problems.front());
+    LinearImage linear = render_linear(model, pose, profile, guide, settings);
+    if (!palette_active(settings)) {
+        Image cell = downsample(linear, profile.supersampling, profile.resampling_filter);
+        if (settings.style.outline) apply_outline(cell, settings.style.outline_colour);
+        return cell;
+    }
+    PaletteMatcher matcher(settings.palette);
+    if (snaps_before(settings.palette_stage)) snap_linear(linear, matcher);
+    Image cell = downsample(linear, profile.supersampling, profile.resampling_filter);
+    if (snaps_after(settings.palette_stage)) snap_image(cell, matcher);
+    threshold_alpha(cell, settings.alpha_threshold);
     if (settings.style.outline) apply_outline(cell, settings.style.outline_colour);
     return cell;
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "pose_atlas/test_rig.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -9,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "pose_atlas/resample.hpp"
 #include "pose_atlas/version.hpp"
 
 namespace pose_atlas::test_rig {
@@ -174,6 +176,31 @@ void push(std::vector<float>& out, const Vec3& v) {
 const Description& description() {
     static const Description d = build_description();
     return d;
+}
+
+std::vector<std::array<std::uint8_t, 3>> palette() {
+    const Description& d = description();
+    std::vector<std::array<std::uint8_t, 3>> out;
+    auto add = [&](const std::array<double, 3>& linear) {
+        std::array<std::uint8_t, 3> c{};
+        for (std::size_t k = 0; k < 3; ++k) {
+            c[k] = static_cast<std::uint8_t>(std::lround(std::clamp(linear_to_srgb(linear[k]), 0.0, 1.0) * 255.0));
+        }
+        if (std::find(out.begin(), out.end(), c) == out.end()) out.push_back(c);
+    };
+    for (const Part& part : d.parts) {
+        if (part.texture < 0) {
+            add({part.colour[0], part.colour[1], part.colour[2]});
+            continue;
+        }
+        const Image& texture = d.textures[static_cast<std::size_t>(part.texture)];
+        for (std::size_t i = 0; i + 3 < texture.rgba.size(); i += 4) {
+            std::array<double, 3> linear{};
+            for (std::size_t k = 0; k < 3; ++k) linear[k] = srgb_to_linear(texture.rgba[i + k] / 255.0) * part.colour[k];
+            add(linear);
+        }
+    }
+    return out;
 }
 
 std::vector<std::uint8_t> make_glb() {

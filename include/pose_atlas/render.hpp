@@ -43,8 +43,13 @@ TextureFilter parse_texture_filter(const std::string& text);
 struct RenderSettings {
     RenderStyle style;
     TextureFilter texture_filter = TextureFilter::Nearest;
-    /// Palette colours (empty = no palette), recorded by content hash.
+    /// Palette-locked output: a palette (empty = none; recorded by content
+    /// hash) and where it is applied. With a palette the final cell's alpha
+    /// is thresholded at `alpha_threshold` coverage to 0 or 255, transparent
+    /// pixels are (0, 0, 0, 0), and the outline comes after the snap.
     std::vector<Rgb8> palette;
+    PaletteStage palette_stage = PaletteStage::None;
+    double alpha_threshold = 0.5;
     /// When not empty, draw only primitives with these material names.
     std::vector<std::string> only_materials;
     /// Never draw primitives with these material names.
@@ -59,9 +64,13 @@ inline constexpr const char* kRenderStyleName = "flat-v2";
 /// (palette_sha256), or null.
 std::string render_settings_json(const RenderSettings& settings);
 
-/// Problems with the settings; empty when they are valid. A palette needs 2
-/// to 256 distinct colours.
+/// Problems with the settings; empty when they are valid. A palette needs a
+/// stage other than none and vice versa, 2 to 256 distinct colours, and an
+/// alpha threshold in (0, 1].
 std::vector<std::string> validate_render_settings(const RenderSettings& settings);
+
+/// Whether the settings ask for palette-locked output.
+inline bool palette_active(const RenderSettings& settings) { return settings.palette_stage != PaletteStage::None; }
 
 class RenderError : public std::runtime_error {
 public:
@@ -86,7 +95,9 @@ public:
     LinearImage render_linear(const Model& model, const Pose& pose, const Profile& profile,
                               const CameraGuide& guide, const RenderSettings& settings);
 
-    /// Final cell: render_linear, downsample, optional outline.
+    /// Final cell: render_linear, [snap to the palette], downsample, [snap,
+    /// threshold alpha], optional outline. Throws RenderError for invalid
+    /// settings.
     Image render(const Model& model, const Pose& pose, const Profile& profile, const CameraGuide& guide,
                  const RenderSettings& settings);
 

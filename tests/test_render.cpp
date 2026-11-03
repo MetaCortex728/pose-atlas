@@ -2,6 +2,7 @@
 #include <doctest.h>
 
 #include <cmath>
+#include <algorithm>
 #include <cstdlib>
 #include <iterator>
 #include <string>
@@ -9,6 +10,7 @@
 
 #include "pose_atlas/camera.hpp"
 #include "pose_atlas/image.hpp"
+#include "pose_atlas/palette.hpp"
 #include "pose_atlas/render.hpp"
 #include "pose_atlas/resample.hpp"
 #include "render_support.hpp"
@@ -283,4 +285,96 @@ TEST_CASE("image: JPEG decoding") {
         CHECK(decoded.rgba[i + 3] == 255);
     }
     CHECK_THROWS_AS(decode_png(jpeg), ImageError);
+}
+
+TEST_CASE("render: palette-locked cells") {
+    const Profile& profile = pose_atlas_test::small_profile();
+    const Model& model = rig();
+    const Pose pose = evaluate(model, &model.animation("run"), 0.3);
+    const CameraGuide guide = camera_guide(profile, "sw");
+    // A palette that is not the rig's own colours, so that every stage has
+    // to move colours.
+    const std::vector<Rgb8> colours = {{0x10, 0x10, 0x18}, {0xf0, 0xf0, 0xe8}, {0xc0, 0x30, 0x30},
+                                       {0x30, 0x60, 0xc0}, {0x40, 0xa0, 0x50}, {0xe0, 0xc0, 0x40},
+                                       {0x90, 0x60, 0x40}, {0x80, 0x40, 0x90}};
+    PaletteMatcher matcher(colours);
+    RenderSettings settings;
+    settings.palette = colours;
+    for (PaletteStage stage : {PaletteStage::Before, PaletteStage::After, PaletteStage::BeforeAfter}) {
+        for (bool outline : {false, true}) {
+            CAPTURE(to_string(stage));
+            CAPTURE(outline);
+            settings.palette_stage = stage;
+            settings.style.outline = outline;
+            const Image cell = renderer().render(model, pose, profile, guide, settings);
+            int opaque = 0, outline_pixels = 0, off_palette = 0;
+            for (int y = 0; y < cell.height; ++y) {
+                for (int x = 0; x < cell.width; ++x) {
+                    const std::uint8_t* p = cell.pixel(x, y);
+                    REQUIRE((p[3] == 0 || p[3] == 255));
+                    if (p[3] == 0) {
+                        CHECK((p[0] == 0 && p[1] == 0 && p[2] == 0));
+                        continue;
+                    }
+                    ++opaque;
+                    const Rgb8 c{p[0], p[1], p[2]};
+                    if (outline && c == settings.style.outline_colour) {
+                        ++outline_pixels;
+                    } else if (!matcher.contains(c)) {
+                        ++off_palette;
+                    }
+                }
+            }
+            CHECK(opaque > 500);
+            CHECK((outline_pixels > 0) == outline);
+            if (snaps_after(stage)) {
+                CHECK(off_palette == 0);
+            } else {
+                CHECK(off_palette > 0);  // before alone: the downsample blends at borders
+            }
+        }
+    }
+    // The outline comes after the snap: it rings the thresholded figure.
+    settings.palette_stage = PaletteStage::BeforeAfter;
+    settings.style.outline = false;
+    const Image plain = renderer().render(model, pose, profile, guide, settings);
+    settings.style.outline = true;
+    const Image ringed = renderer().render(model, pose, profile, guide, settings);
+    for (int y = 0; y < plain.height; ++y) {
+        for (int x = 0; x < plain.width; ++x) {
+            if (plain.pixel(x, y)[3] == 255) {
+                CHECK(std::equal(plain.pixel(x, y), plain.pixel(x, y) + 4, ringed.pixel(x, y)));
+            }
+        }
+    }
+    // A lower threshold keeps more of the edge.
+    settings.style.outline = false;
+    settings.alpha_threshold = 0.1;
+    const Image generous = renderer().render(model, pose, profile, guide, settings);
+    auto count = [](const Image& image) {
+        int n = 0;
+        for (std::size_t i = 3; i < image.rgba.size(); i += 4) n += image.rgba[i] == 255 ? 1 : 0;
+        return n;
+    };
+    CHECK(count(generous) > count(plain));
+    // Invalid settings are refused.
+    settings.palette.clear();
+    CHECK_THROWS_AS(renderer().render(model, pose, profile, guide, settings), RenderError);
+}
+
+TEST_CASE("render: palette-locked output is deterministic") {
+    const Profile& profile = gltf_profile();
+    const Model& model = rig();
+    const Pose pose = evaluate(model, &model.animation("run"), 0.3);
+    const CameraGuide guide = camera_guide(profile, "ne");
+    RenderSettings settings;
+    settings.palette = test_rig::palette();
+    settings.style.outline = true;
+    for (PaletteStage stage : {PaletteStage::Before, PaletteStage::BeforeAfter}) {
+        settings.palette_stage = stage;
+        const auto first = encode_png(renderer().render(model, pose, profile, guide, settings));
+        CHECK(encode_png(renderer().render(model, pose, profile, guide, settings)) == first);
+        Renderer other;
+        CHECK(encode_png(other.render(model, pose, profile, guide, settings)) == first);
+    }
 }

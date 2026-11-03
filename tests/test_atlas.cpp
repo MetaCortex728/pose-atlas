@@ -247,6 +247,7 @@ TEST_CASE("atlas: the content-hash cache re-renders only what changed") {
     // So does the palette's content hash; the contract names the palette.
     job.settings = {};
     job.settings.palette = {{0x1a, 0x14, 0x1e}, {0xff, 0xff, 0xff}};
+    job.settings.palette_stage = PaletteStage::BeforeAfter;
     job.palette_path = "two.json";
     const Atlas with_palette = render_atlas(renderer, job, cache);
     CHECK(reused(with_palette, "idle") == 0);

@@ -79,6 +79,12 @@ struct Description {
 /// last key equals the first. The torso carries a 2x2 checker texture.
 const Description& description();
 
+/// The figure's rendered colours as 8-bit sRGB, in part order without
+/// repeats: each untextured part's base colour, and for textured parts each
+/// texel times the part's colour factor. palettes/test-rig.json holds
+/// the same colours.
+std::vector<std::array<std::uint8_t, 3>> palette();
+
 /// The figure as GLB bytes. Deterministic: the same bytes on every call and
 /// build.
 std::vector<std::uint8_t> make_glb();

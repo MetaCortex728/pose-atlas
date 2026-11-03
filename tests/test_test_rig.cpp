@@ -8,6 +8,7 @@
 #include <string>
 #include <tuple>
 
+#include "pose_atlas/palette.hpp"
 #include "pose_atlas/test_rig.hpp"
 
 using namespace pose_atlas;
@@ -115,4 +116,11 @@ TEST_CASE("test rig: boxes are closed, outward-facing and the pivot marker sits 
 
 TEST_CASE("test rig: output is deterministic") {
     CHECK(test_rig::make_glb() == test_rig::make_glb());
+}
+
+TEST_CASE("test rig: palette of its colours matches palettes/test-rig.json") {
+    const auto colours = test_rig::palette();
+    CHECK(colours.size() == 16);  // 12 flat colours and the 4 texels of the torso
+    const Palette file = load_palette(std::string(POSE_ATLAS_SOURCE_DIR) + "/palettes/test-rig.json");
+    CHECK(file.colours == colours);
 }

@@ -51,6 +51,10 @@ constexpr const char* kUsage =
     "      --hide-material NAME        do not draw this material (repeatable)\n"
     "      --palette FILE              palette: JSON {\"colors\": [\"#rrggbb\", ...]} or a PNG\n"
     "                                  whose distinct opaque pixels are the colours (2 to 256)\n"
+    "      --palette-stage S           where to snap to the palette: before (supersampled\n"
+    "                                  render), after (cell) or before_after (default)\n"
+    "      --alpha-threshold A         with a palette, coverage at which a pixel becomes\n"
+    "                                  opaque; the rest becomes transparent (default 0.5)\n"
     "      --cache DIR | --no-cache    render cache (default <out>/cache)\n"
     "  validate <dir> [--report FILE]  check an exported directory against its contract\n"
     "  version                         print the version\n"
@@ -248,6 +252,7 @@ int render_command(const Args& args) {
     pose_atlas::AtlasJob job;
     job.model_path = args[1];
     std::string profile_path, actions, out, cache, poses = "8";
+    std::string palette_stage, alpha_threshold;
     bool no_cache = false, have_rate = false, have_frame = false;
     pose_atlas::Cadence cadence;
     for (std::size_t i = 2; i < args.size(); ++i) {
@@ -285,6 +290,10 @@ int render_command(const Args& args) {
             }
         } else if (option == "--palette") {
             job.palette_path = value;
+        } else if (option == "--palette-stage") {
+            palette_stage = value;
+        } else if (option == "--alpha-threshold") {
+            alpha_threshold = value;
         } else if (option == "--hide-material") {
             job.settings.hidden_materials.push_back(value);
         } else if (option == "--cache") {
@@ -298,6 +307,25 @@ int render_command(const Args& args) {
     }
     if (have_rate && have_frame) throw UsageError("render: choose one cadence: --rate or --frame-ms");
     if (no_cache && !cache.empty()) throw UsageError("render: --cache and --no-cache exclude each other");
+    if (job.palette_path.empty() && (!palette_stage.empty() || !alpha_threshold.empty())) {
+        throw UsageError("render: --palette-stage and --alpha-threshold need --palette");
+    }
+    if (!job.palette_path.empty()) {
+        try {
+            job.settings.palette_stage = pose_atlas::parse_palette_stage(palette_stage.empty() ? "before_after" : palette_stage);
+        } catch (const std::invalid_argument& e) {
+            throw UsageError(std::string("--palette-stage: ") + e.what());
+        }
+        if (job.settings.palette_stage == pose_atlas::PaletteStage::None) {
+            throw UsageError("--palette-stage: none would ignore the palette; leave out --palette instead");
+        }
+        if (!alpha_threshold.empty()) {
+            job.settings.alpha_threshold = parse_number("--alpha-threshold", alpha_threshold);
+            if (!(job.settings.alpha_threshold > 0.0 && job.settings.alpha_threshold <= 1.0)) {
+                throw UsageError("--alpha-threshold: expected a coverage in (0, 1]");
+            }
+        }
+    }
 
     // Pose counts: one number for every action, or action=count pairs.
     std::map<std::string, int> counts;

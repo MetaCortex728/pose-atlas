@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <doctest.h>
 
+#include <algorithm>
+#include <iterator>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -92,6 +95,8 @@ TEST_CASE("palette: validation") {
     RenderSettings settings;
     CHECK(validate_render_settings(settings).empty());
     settings.palette = {{0, 0, 0}, {255, 255, 255}};
+    CHECK_FALSE(validate_render_settings(settings).empty());  // no stage
+    settings.palette_stage = PaletteStage::BeforeAfter;
     CHECK(validate_render_settings(settings).empty());
     CHECK(render_settings_json(settings).find(palette_sha256(settings.palette)) != std::string::npos);
     CHECK(render_settings_json(settings) != render_settings_json({}));
@@ -99,4 +104,81 @@ TEST_CASE("palette: validation") {
     CHECK_FALSE(validate_render_settings(settings).empty());
     settings.palette = {{1, 2, 3}};
     CHECK_FALSE(validate_render_settings(settings).empty());
+    settings.palette = {{0, 0, 0}, {255, 255, 255}};
+    for (double bad : {0.0, -0.5, 1.5}) {
+        settings.alpha_threshold = bad;
+        CHECK_FALSE(validate_render_settings(settings).empty());
+    }
+    settings.alpha_threshold = 1.0;
+    CHECK(validate_render_settings(settings).empty());
+    RenderSettings stage_only;
+    stage_only.palette_stage = PaletteStage::After;
+    CHECK_FALSE(validate_render_settings(stage_only).empty());
+}
+
+TEST_CASE("palette: Oklab nearest colour") {
+    const Oklab white = linear_to_oklab(1, 1, 1);
+    CHECK(white.L == doctest::Approx(1.0).epsilon(1e-6));
+    CHECK(white.a == doctest::Approx(0.0).scale(1.0).epsilon(1e-6));
+    CHECK(white.b == doctest::Approx(0.0).scale(1.0).epsilon(1e-6));
+    // Ottosson's reference value for linear sRGB red.
+    const Oklab red = linear_to_oklab(1, 0, 0);
+    CHECK(red.L == doctest::Approx(0.627955).epsilon(1e-4));
+    CHECK(red.a == doctest::Approx(0.224863).epsilon(1e-4));
+    CHECK(red.b == doctest::Approx(0.125846).epsilon(1e-4));
+
+    PaletteMatcher matcher({{0, 0, 0}, {255, 255, 255}, {200, 30, 30}});
+    CHECK(matcher.contains({200, 30, 30}));
+    CHECK_FALSE(matcher.contains({200, 30, 31}));
+    CHECK(matcher.nearest_srgb({200, 30, 30}) == 2);
+    CHECK(matcher.nearest_srgb({180, 50, 40}) == 2);
+    // Mid grey (sRGB 128, linear 0.216) is perceptually nearer white than
+    // black; in linear RGB it would be nearer black.
+    PaletteMatcher grey({{0, 0, 0}, {255, 255, 255}});
+    CHECK(grey.nearest_srgb({128, 128, 128}) == 1);
+    CHECK(grey.nearest_linear(0.216f, 0.216f, 0.216f) == 1);
+    CHECK(grey.nearest_srgb({90, 90, 90}) == 0);
+    // Ties go to the first colour.
+    PaletteMatcher twins({{10, 10, 10}, {10, 10, 10}});
+    CHECK(twins.nearest_srgb({0, 0, 0}) == 0);
+}
+
+TEST_CASE("palette: snapping and hard alpha") {
+    PaletteMatcher matcher({{0, 0, 0}, {255, 255, 255}, {200, 30, 30}});
+    // Premultiplied linear: a half-covered reddish pixel keeps its alpha and
+    // takes the palette red; transparent pixels stay untouched.
+    LinearImage linear;
+    linear.width = 2;
+    linear.height = 1;
+    linear.rgba = {0.3f, 0.01f, 0.01f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f};
+    snap_linear(linear, matcher);
+    CHECK(linear.rgba[0] == doctest::Approx(srgb_to_linear(200 / 255.0) * 0.5));
+    CHECK(linear.rgba[1] == doctest::Approx(srgb_to_linear(30 / 255.0) * 0.5));
+    CHECK(linear.rgba[3] == 0.5f);
+    CHECK(linear.rgba[4] == 0.0f);
+
+    Image image(3, 1);
+    const std::uint8_t pixels[] = {190, 40, 20, 255, 240, 250, 255, 127, 9, 9, 9, 0};
+    std::copy(std::begin(pixels), std::end(pixels), image.rgba.begin());
+    snap_image(image, matcher);
+    CHECK(image.pixel(0, 0)[0] == 200);
+    CHECK(image.pixel(1, 0)[2] == 255);
+    CHECK(image.pixel(2, 0)[0] == 9);  // transparent: untouched by the snap
+    threshold_alpha(image, 0.5);
+    CHECK(image.pixel(0, 0)[3] == 255);
+    // 127/255 is below half coverage: transparent black.
+    CHECK(std::vector<std::uint8_t>(image.pixel(1, 0), image.pixel(1, 0) + 4) == std::vector<std::uint8_t>{0, 0, 0, 0});
+    CHECK(std::vector<std::uint8_t>(image.pixel(2, 0), image.pixel(2, 0) + 4) == std::vector<std::uint8_t>{0, 0, 0, 0});
+    CHECK(alpha_passes(128, 0.5));
+    CHECK_FALSE(alpha_passes(127, 0.5));
+    CHECK(alpha_passes(255, 1.0));
+    CHECK_FALSE(alpha_passes(254, 1.0));
+
+    CHECK(parse_palette_stage("before_after") == PaletteStage::BeforeAfter);
+    CHECK(to_string(PaletteStage::After) == "after");
+    CHECK_THROWS_AS(parse_palette_stage("during"), std::invalid_argument);
+    CHECK(snaps_before(PaletteStage::BeforeAfter));
+    CHECK_FALSE(snaps_before(PaletteStage::After));
+    CHECK(snaps_after(PaletteStage::After));
+    CHECK_FALSE(snaps_after(PaletteStage::Before));
 }
