@@ -52,6 +52,7 @@ find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
 
 # Core library.
 add_library(pose_atlas STATIC
+    src/atlas.cpp
     src/camera.cpp
     src/gltf_loader.cpp
     src/image.cpp
@@ -62,6 +63,7 @@ add_library(pose_atlas STATIC
     src/resample.cpp
     src/sampling.cpp
     src/test_rig.cpp
+    src/validate.cpp
     src/version.cpp)
 add_library(pose_atlas::pose_atlas ALIAS pose_atlas)
 target_include_directories(pose_atlas PUBLIC
