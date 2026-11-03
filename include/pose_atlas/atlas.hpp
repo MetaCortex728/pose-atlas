@@ -5,6 +5,7 @@
 // its Aseprite-style JSON, an editable .aseprite file and the pose contract.
 #pragma once
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -25,7 +26,13 @@ inline constexpr const char* kAsepriteBaseLayer = "Render";
 inline constexpr const char* kAsepriteCorrectionsLayer = "Manual corrections";
 inline constexpr const char* kContractJson = "pose-contract.json";
 inline constexpr const char* kContractFormat = "pose-atlas-contract";
-inline constexpr int kContractVersion = 1;
+inline constexpr int kContractVersion = 2;
+
+/// Errors in the atlas as a whole, such as two frames with the same key.
+class AtlasError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 struct AtlasJob {
     std::string model_path;
@@ -81,7 +88,41 @@ std::vector<int> frame_durations_ms(const SamplingPlan& plan);
 /// action name, its sampled source times and the view.
 std::string render_key(const Atlas& atlas, const SamplingPlan& plan, int view);
 
-/// Sample and render every action in eight views. With a non-empty
+/// A source time in whole microseconds (rounded to nearest, halves away from
+/// zero).
+long long source_time_us(double source_time_s);
+
+/// The key of a frame, independent of its position in the atlas:
+/// "<action>.<view>@<source time in seconds with exactly six decimals>",
+/// e.g. "run.se@0.416667" (source time quantised to whole microseconds, a
+/// leading "-" for negative times).
+std::string frame_key(const std::string& action, const std::string& view, double source_time_s);
+
+/// One frame of an atlas, in atlas order (view by view, the poses of each
+/// view in column order).
+struct AtlasFrame {
+    std::string name;     // "<pose>.<view>", e.g. "run3.nw"
+    std::string key;      // frame_key()
+    std::size_t action = 0;
+    int pose = 0;
+    int view = 0;
+    int column = 0;
+};
+
+/// Every frame of an atlas (needs only its plans and pose names). Throws
+/// AtlasError when two frames would share a key.
+std::vector<AtlasFrame> atlas_frames(const Atlas& atlas);
+
+/// SHA-256 of everything that determines one frame's render: the model
+/// file's hash, the profile's hash, the render settings' hash, the renderer,
+/// the action, the view and the exact source time.
+std::string frame_input_sha256(const Atlas& atlas, const AtlasFrame& frame);
+std::string frame_input_sha256(const std::string& model_sha256, const std::string& profile_sha256,
+                               const std::string& settings_sha256, const std::string& renderer,
+                               const std::string& action, const std::string& view, double source_time_s);
+
+/// Sample and render every action in eight views (after checking that frame
+/// keys are unique). With a non-empty
 /// `cache_dir` (created if missing), each (action, view) is first looked up
 /// by its render key: a stored strip of that action's poses in that view is
 /// reused, otherwise the poses are rendered and the strip is stored as
@@ -98,7 +139,8 @@ std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_fil
 
 /// The atlas as an Aseprite document: one frame per cell in atlas order (view
 /// by view, the poses of each view in column order) with its duration, a
-/// base layer "Render" holding the cell, an empty layer "Manual corrections"
+/// base layer "Render" holding the cell (its user data text is the frame's
+/// key), an empty layer "Manual corrections"
 /// above it, one tag per state ("<action>.<view>" over that action's poses in
 /// that view) and a "foot" slice over the cell with the pivot.
 AsepriteDocument aseprite_document(const Atlas& atlas);

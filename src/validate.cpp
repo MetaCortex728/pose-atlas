@@ -200,6 +200,12 @@ private:
         if (frames.size() != total || items.size() != total) return;
         check_aseprite(contract, profile, columns, views);
         std::vector<std::string> cell_hashes;
+        std::set<std::string> keys;
+        const json& sources = contract.at("sources");
+        const std::string model_sha = sources.at("model").at("sha256");
+        const std::string profile_sha = sources.at("profile").at("sha256");
+        const std::string settings_sha = sources.at("render_settings").at("sha256");
+        const std::string renderer = contract.at("renderer");
         for (std::size_t index = 0; index < total; ++index) {
             const json& frame = frames[index];
             const json& item = items[index];
@@ -230,8 +236,27 @@ private:
                        std::hypot(heading[0] - analytic.x / length, heading[1] - analytic.y / length) < 1e-9,
                    where + "projected_heading does not follow from the profile");
 
+            // The frame key and the hash of the frame's inputs.
+            const std::string action = item.at("action"), view = item.at("view");
+            const double time = item.at("source_time_s");
+            const std::string key = item.value("key", "");
+            std::string expected_key;
+            try {
+                expected_key = frame_key(action, view, time);
+            } catch (const AtlasError& e) {
+                problem(where + e.what());
+            }
+            expect(key == expected_key, where + "key " + json(key).dump() + " is not " + json(expected_key).dump() +
+                                            " (<action>.<view>@<source time to the microsecond>)");
+            expect(keys.insert(key).second, where + "key " + json(key).dump() + " is not unique");
+            expect(item.value("input_sha256", "") ==
+                       frame_input_sha256(model_sha, profile_sha, settings_sha, renderer, action, view, time),
+                   where + "input_sha256 is not the hash of the frame's inputs");
+
             const Image cell = crop(atlas, x, y, size, size);
-            check_aseprite_cell(index, cell, where);
+            expect(item.value("render_sha256", "") == sha256_hex(cell.rgba),
+                   where + "render_sha256 is not the hash of the frame's RGBA");
+            check_aseprite_cell(index, cell, key, where);
             const Bounds b = alpha_bounds(cell);
             if (b.empty()) {
                 problem(where + "blank pose");
@@ -369,8 +394,13 @@ private:
                "atlas.aseprite: expected one foot slice over the cell with the profile's pivot");
     }
 
-    void check_aseprite_cell(std::size_t index, const Image& cell, const std::string& where) {
+    void check_aseprite_cell(std::size_t index, const Image& cell, const std::string& key, const std::string& where) {
         if (!aseprite_ok_) return;
+        for (const AsepriteCel& cel : aseprite_.frames[index].cels) {
+            if (cel.layer != 0) continue;
+            expect(cel.user_text == key, where + "atlas.aseprite Render cel's user data is " +
+                                             json(cel.user_text).dump() + ", not the frame key " + json(key).dump());
+        }
         // Compose the base layer's cels into a cell-sized image.
         Image base(cell.width, cell.height);
         for (const AsepriteCel& cel : aseprite_.frames[index].cels) {

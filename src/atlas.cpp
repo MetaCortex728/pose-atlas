@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <set>
 
 #include <nlohmann/json.hpp>
@@ -55,6 +56,36 @@ std::vector<int> frame_durations_ms(const SamplingPlan& plan) {
         out.push_back(static_cast<int>(d));
     }
     return out;
+}
+
+long long source_time_us(double source_time_s) {
+    if (!std::isfinite(source_time_s) || std::fabs(source_time_s) > 9.0e12) {
+        throw AtlasError("source time " + exact(source_time_s) + " s cannot be quantised to microseconds");
+    }
+    return std::llround(source_time_s * 1e6);
+}
+
+std::string frame_key(const std::string& action, const std::string& view, double source_time_s) {
+    const long long us = source_time_us(source_time_s);
+    const unsigned long long magnitude = static_cast<unsigned long long>(us < 0 ? -us : us);
+    char buffer[48];
+    std::snprintf(buffer, sizeof buffer, "%s%llu.%06llu", us < 0 ? "-" : "", magnitude / 1000000ull,
+                  magnitude % 1000000ull);
+    return action + "." + view + "@" + buffer;
+}
+
+std::string frame_input_sha256(const std::string& model_sha256, const std::string& profile_sha256,
+                               const std::string& settings_sha256, const std::string& renderer,
+                               const std::string& action, const std::string& view, double source_time_s) {
+    std::string text = "pose-atlas frame input 1\n";
+    text += "model " + model_sha256 + "\n";
+    text += "profile " + profile_sha256 + "\n";
+    text += "settings " + settings_sha256 + "\n";
+    text += "renderer " + renderer + "\n";
+    text += "action " + action + "\n";
+    text += "view " + view + "\n";
+    text += "time " + exact(source_time_s) + "\n";
+    return sha256_hex(text);
 }
 
 std::string render_key(const Atlas& atlas, const SamplingPlan& plan, int view) {
@@ -153,6 +184,7 @@ Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& c
         }
     }
     atlas.columns = static_cast<int>(atlas.pose_names.size());
+    atlas_frames(atlas);  // fails early when two frames would share a key
     atlas.cells.resize(static_cast<std::size_t>(atlas.columns) * kScreenHeadings.size());
 
     if (!cache_dir.empty()) {
@@ -231,29 +263,6 @@ Image atlas_image(const Atlas& atlas) {
 
 namespace {
 
-// Per-frame bookkeeping shared by the metadata and the contract.
-struct FrameInfo {
-    std::string name;
-    std::size_t action = 0;
-    int pose = 0;
-    int view = 0;
-    int column = 0;
-};
-
-std::vector<FrameInfo> frame_infos(const Atlas& atlas) {
-    std::vector<FrameInfo> out;
-    for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
-        int column = 0;
-        for (std::size_t a = 0; a < atlas.plans.size(); ++a) {
-            for (int pose = 0; pose < atlas.plans[a].pose_count; ++pose, ++column) {
-                out.push_back({atlas.pose_names[static_cast<std::size_t>(column)] + "." +
-                                   kScreenHeadings[static_cast<std::size_t>(view)],
-                               a, pose, view, column});
-            }
-        }
-    }
-    return out;
-}
 
 // One tag per state, "<action>.<view>" over that action's poses in that view,
 // view by view and in action order: the same list in atlas.json and
@@ -274,12 +283,47 @@ std::vector<AsepriteTag> state_tags(const Atlas& atlas) {
 
 }  // namespace
 
+std::vector<AtlasFrame> atlas_frames(const Atlas& atlas) {
+    std::vector<AtlasFrame> out;
+    std::map<std::string, std::size_t> seen;
+    for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
+        const std::string heading = kScreenHeadings[static_cast<std::size_t>(view)];
+        int column = 0;
+        for (std::size_t a = 0; a < atlas.plans.size(); ++a) {
+            const SamplingPlan& plan = atlas.plans[a];
+            for (int pose = 0; pose < plan.pose_count; ++pose, ++column) {
+                const double time = plan.samples[static_cast<std::size_t>(pose)].source_time_s;
+                AtlasFrame frame{plan.action + std::to_string(pose) + "." + heading,
+                                 frame_key(plan.action, heading, time), a, pose, view, column};
+                const auto inserted = seen.emplace(frame.key, out.size());
+                if (!inserted.second) {
+                    const AtlasFrame& other = out[inserted.first->second];
+                    const double other_time =
+                        atlas.plans[other.action].samples[static_cast<std::size_t>(other.pose)].source_time_s;
+                    throw AtlasError("frames " + other.name + " and " + frame.name + " would share the key \"" +
+                                     frame.key + "\": their source times (" + exact(other_time) + " s and " +
+                                     exact(time) + " s) are equal to the microsecond; sample fewer poses or a "
+                                     "longer source range");
+                }
+                out.push_back(std::move(frame));
+            }
+        }
+    }
+    return out;
+}
+
+std::string frame_input_sha256(const Atlas& atlas, const AtlasFrame& frame) {
+    const SamplingPlan& plan = atlas.plans[frame.action];
+    return frame_input_sha256(atlas.model_sha256, atlas.profile_sha256, atlas.settings_sha256, atlas.renderer,
+                              plan.action, kScreenHeadings[static_cast<std::size_t>(frame.view)],
+                              plan.samples[static_cast<std::size_t>(frame.pose)].source_time_s);
+}
+
 std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_file) {
     const int cell = atlas.profile.cell_pixels;
     ordered_json frames = ordered_json::array();
     ordered_json tags = ordered_json::array();
-    const auto infos = frame_infos(atlas);
-    for (const FrameInfo& f : infos) {
+    for (const AtlasFrame& f : atlas_frames(atlas)) {
         frames.push_back({{"filename", f.name},
                           {"frame", rect(f.column * cell, f.view * cell, cell, cell)},
                           {"rotated", false},
@@ -322,10 +366,13 @@ AsepriteDocument aseprite_document(const Atlas& atlas) {
     doc.width = cell;
     doc.height = cell;
     doc.layers = {kAsepriteBaseLayer, kAsepriteCorrectionsLayer};
-    for (const FrameInfo& f : frame_infos(atlas)) {
+    for (const AtlasFrame& f : atlas_frames(atlas)) {
         AsepriteFrame frame;
         frame.duration_ms = atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)];
-        frame.cels.push_back({0, 0, 0, atlas.cell(f.view, f.column)});
+        AsepriteCel cel;
+        cel.image = atlas.cell(f.view, f.column);
+        cel.user_text = f.key;
+        frame.cels.push_back(std::move(cel));
         doc.frames.push_back(std::move(frame));
     }
     doc.tags = state_tags(atlas);
@@ -409,19 +456,22 @@ std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& dir
     c["actions"] = actions;
 
     ordered_json frames = ordered_json::array();
-    for (const FrameInfo& f : frame_infos(atlas)) {
+    for (const AtlasFrame& f : atlas_frames(atlas)) {
         const SamplingPlan& plan = atlas.plans[f.action];
         const Sample& s = plan.samples[static_cast<std::size_t>(f.pose)];
         const Vec2 forward = projected_forward(p, camera_guide(p, f.view));
         const double length = std::hypot(forward.x, forward.y);
         frames.push_back({{"name", f.name},
+                          {"key", f.key},
                           {"action", plan.action},
                           {"pose_index", f.pose},
                           {"view", kScreenHeadings[static_cast<std::size_t>(f.view)]},
                           {"source_time_s", s.source_time_s},
                           {"runtime_start_ms", optional_number(s.runtime_start_ms)},
                           {"duration_ms", atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)]},
-                          {"projected_heading", {forward.x / length, forward.y / length}}});
+                          {"projected_heading", {forward.x / length, forward.y / length}},
+                          {"input_sha256", frame_input_sha256(atlas, f)},
+                          {"render_sha256", sha256_hex(atlas.cell(f.view, f.column).rgba)}});
     }
     c["frames"] = frames;
     if (palette_active(atlas.settings)) {

@@ -14,7 +14,11 @@ constexpr std::uint16_t kChunkCel = 0x2005;
 constexpr std::uint16_t kChunkColorProfile = 0x2007;
 constexpr std::uint16_t kChunkTags = 0x2018;
 constexpr std::uint16_t kChunkPalette = 0x2019;
+constexpr std::uint16_t kChunkCelExtra = 0x2006;
+constexpr std::uint16_t kChunkUserData = 0x2020;
 constexpr std::uint16_t kChunkSlice = 0x2022;
+constexpr std::uint16_t kCelRawImage = 0;
+constexpr std::uint16_t kCelLinked = 1;
 constexpr std::uint16_t kCelCompressedImage = 2;
 
 // Little-endian writer.
@@ -252,17 +256,28 @@ std::vector<std::uint8_t> write_aseprite(const AsepriteDocument& doc) {
             if (cel.layer < 0 || cel.layer >= static_cast<int>(doc.layers.size())) {
                 throw AsepriteError("cel on a layer that does not exist");
             }
-            Chunk c(w, kChunkCel, chunks);
-            w.word(static_cast<std::uint32_t>(cel.layer));
-            w.short_(cel.x);
-            w.short_(cel.y);
-            w.byte(255);  // opacity
-            w.word(kCelCompressedImage);
-            w.short_(0);  // z-index
-            w.zeros(5);
-            w.word(static_cast<std::uint32_t>(cel.image.width));
-            w.word(static_cast<std::uint32_t>(cel.image.height));
-            w.bytes(zlib_compress(cel.image.rgba.data(), cel.image.rgba.size()));
+            if (cel.opacity < 0 || cel.opacity > 255) throw AsepriteError("cel opacity out of range");
+            {
+                Chunk c(w, kChunkCel, chunks);
+                w.word(static_cast<std::uint32_t>(cel.layer));
+                w.short_(cel.x);
+                w.short_(cel.y);
+                w.byte(static_cast<std::uint8_t>(cel.opacity));
+                w.word(kCelCompressedImage);
+                w.short_(0);  // z-index
+                w.zeros(5);
+                w.word(static_cast<std::uint32_t>(cel.image.width));
+                w.word(static_cast<std::uint32_t>(cel.image.height));
+                w.bytes(zlib_compress(cel.image.rgba.data(), cel.image.rgba.size()));
+            }
+            if (!cel.user_text.empty() || cel.user_colour) {
+                Chunk c(w, kChunkUserData, chunks);
+                w.dword((cel.user_text.empty() ? 0u : 1u) | (cel.user_colour ? 2u : 0u));
+                if (!cel.user_text.empty()) w.string(cel.user_text);
+                if (cel.user_colour) {
+                    for (std::uint8_t v : *cel.user_colour) w.byte(v);
+                }
+            }
         }
         w.patch_dword(frame_start, w.size() - frame_start);
         auto& data = w.data();
@@ -300,12 +315,17 @@ AsepriteDocument read_aseprite(const std::vector<std::uint8_t>& bytes, const std
         const std::uint32_t new_count = fr.dword();
         const std::uint32_t chunks = new_count != 0 ? new_count : old_count;
         std::size_t chunk_pos = pos + 16;
+        // A user data chunk belongs to the chunk before it (for cels: the cel,
+        // possibly with a cel extra chunk in between).
+        bool after_cel = false;
         for (std::uint32_t c = 0; c < chunks; ++c) {
             Reader ch(bytes, chunk_pos, pos + frame_size, source);
             const std::uint32_t size = ch.dword();
             if (size < 6 || size > pos + frame_size - chunk_pos) ch.fail("bad chunk size");
             const std::uint16_t type = ch.word();
             Reader r(bytes, chunk_pos + 6, chunk_pos + size, source);
+            const bool was_after_cel = after_cel;
+            after_cel = false;
             if (type == kChunkLayer) {
                 r.skip(2);
                 if (r.word() != 0) r.fail("only normal image layers are supported");
@@ -316,14 +336,29 @@ AsepriteDocument read_aseprite(const std::vector<std::uint8_t>& bytes, const std
                 cel.layer = r.word();
                 cel.x = r.short_();
                 cel.y = r.short_();
-                r.skip(1);
+                cel.opacity = r.byte();
                 const std::uint16_t cel_type = r.word();
                 r.skip(2 + 5);
-                if (cel_type != kCelCompressedImage && cel_type != 0) r.fail("unsupported cel type");
+                after_cel = true;
+                if (cel_type == kCelLinked) {
+                    // A copy of the cel on the same layer in an earlier frame.
+                    const std::size_t target = r.word();
+                    const AsepriteCel* linked = nullptr;
+                    if (target < doc.frames.size()) {
+                        for (const AsepriteCel& other : doc.frames[target].cels) {
+                            if (other.layer == cel.layer) linked = &other;
+                        }
+                    }
+                    if (linked == nullptr) r.fail("linked cel refers to a frame without a cel on its layer");
+                    frame.cels.push_back(*linked);
+                    chunk_pos += size;
+                    continue;
+                }
+                if (cel_type != kCelCompressedImage && cel_type != kCelRawImage) r.fail("unsupported cel type");
                 const int w = r.word();
                 const int h = r.word();
                 cel.image = Image(w, h);
-                if (cel_type == 0) {
+                if (cel_type == kCelRawImage) {
                     if (r.end() - r.pos() < cel.image.rgba.size()) r.fail("raw cel too short");
                     std::copy(r.here(), r.here() + cel.image.rgba.size(), cel.image.rgba.begin());
                 } else {
@@ -332,6 +367,17 @@ AsepriteDocument read_aseprite(const std::vector<std::uint8_t>& bytes, const std
                     cel.image.rgba = pixels;
                 }
                 frame.cels.push_back(std::move(cel));
+            } else if (type == kChunkCelExtra) {
+                after_cel = was_after_cel;
+            } else if (type == kChunkUserData && was_after_cel && !frame.cels.empty()) {
+                AsepriteCel& cel = frame.cels.back();
+                const std::uint32_t flags = r.dword();
+                if (flags & 1) cel.user_text = r.string();
+                if (flags & 2) {
+                    AsepriteColour colour{};
+                    for (std::uint8_t& v : colour) v = r.byte();
+                    cel.user_colour = colour;
+                }
             } else if (type == kChunkTags) {
                 const int n = r.word();
                 r.skip(8);

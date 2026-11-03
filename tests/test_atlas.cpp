@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <map>
+#include <set>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -84,6 +86,92 @@ TEST_CASE("atlas: frame durations round cumulatively") {
     CHECK_THROWS_AS(frame_durations_ms(plan), SamplingError);
 }
 
+namespace {
+
+// An atlas with plans but no renders: enough for frame keys.
+Atlas planned_atlas(int idle_poses, int run_poses) {
+    Atlas atlas;
+    for (const auto& [action, poses] : {std::pair<const char*, int>{"idle", idle_poses}, {"run", run_poses}}) {
+        SamplingSpec spec;
+        spec.action = action;
+        spec.pose_count = poses;
+        atlas.plans.push_back(plan_sampling(pose_atlas_test::rig(), spec));
+        for (const Sample& s : atlas.plans.back().samples) atlas.pose_names.push_back(action + std::to_string(s.pose_index));
+    }
+    atlas.columns = static_cast<int>(atlas.pose_names.size());
+    return atlas;
+}
+
+std::map<std::string, std::string> keys_by_name(const Atlas& atlas) {
+    std::map<std::string, std::string> out;
+    for (const AtlasFrame& f : atlas_frames(atlas)) out[f.name] = f.key;
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("atlas: frame keys") {
+    CHECK(source_time_us(0.4166666666) == 416667);
+    CHECK(source_time_us(-0.0000005) == -1);
+    CHECK(frame_key("run", "se", 5.0 / 12.0) == "run.se@0.416667");
+    CHECK(frame_key("idle", "e", 0.0) == "idle.e@0.000000");
+    CHECK(frame_key("idle", "e", -0.0) == "idle.e@0.000000");
+    CHECK(frame_key("jump", "nw", 12.5) == "jump.nw@12.500000");
+    CHECK(frame_key("jump", "nw", -0.25) == "jump.nw@-0.250000");
+    CHECK(frame_key("a", "n", 0.1 + 0.2) == frame_key("a", "n", 0.3));  // last-bit differences vanish
+    CHECK_THROWS_AS(frame_key("a", "n", std::nan("")), AtlasError);
+
+    // 8 + 8 poses: 128 distinct keys in atlas order.
+    const Atlas base = planned_atlas(8, 8);
+    const auto frames = atlas_frames(base);
+    REQUIRE(frames.size() == 128);
+    CHECK(frames[0].key == "idle.e@0.000000");
+    CHECK(frames[9].name == "run1.e");
+    CHECK(frames[9].key == "run.e@0.100000");
+    CHECK(frames[127].key == "run.se@0.700000");
+    std::set<std::string> distinct;
+    for (const auto& f : frames) distinct.insert(f.key);
+    CHECK(distinct.size() == 128);
+
+    // A change of pose count in another action leaves the keys of this one.
+    const auto before = keys_by_name(base);
+    const auto other = keys_by_name(planned_atlas(8, 6));
+    for (const auto& [name, key] : before) {
+        if (name.rfind("idle", 0) == 0) CHECK(other.at(name) == key);
+    }
+    // A change of this action's pose count keeps the keys of poses whose
+    // source time is unchanged: run 8 -> 4 samples 0, 0.2, 0.4, 0.6 s, all
+    // of which run 8 had (as run0, run2, run4, run6).
+    const auto fewer = keys_by_name(planned_atlas(8, 4));
+    for (const char* view : {"e", "ne", "n", "nw", "w", "sw", "s", "se"}) {
+        for (int pose = 0; pose < 4; ++pose) {
+            CHECK(fewer.at("run" + std::to_string(pose) + "." + view) ==
+                  before.at("run" + std::to_string(2 * pose) + "." + view));
+        }
+    }
+    // run 8 -> 6 samples 0, 0.1333, 0.2667, 0.4, ...: run0 and run3 keep
+    // the keys of run0 and run4 (0 and 0.4 s, computed differently).
+    const auto six = keys_by_name(planned_atlas(8, 6));
+    CHECK(six.at("run3.sw") == before.at("run4.sw"));
+    CHECK(six.at("run3.sw") == "run.sw@0.400000");
+    CHECK(six.at("run0.sw") == before.at("run0.sw"));
+    CHECK(six.at("run1.sw") == "run.sw@0.133333");
+
+    // Poses closer than a microsecond collide: refused with a clear error.
+    AtlasJob job = rig_job(4, true);
+    job.actions[1].start_s = 0.0;
+    job.actions[1].end_s = 0.0000016;  // 0, 0.4, 0.8, 1.2 microseconds
+    job.actions[1].cadence.kind = Cadence::Kind::FixedFrame;
+    job.actions[1].cadence.frame_ms = 100;
+    try {
+        render_atlas(pose_atlas_test::renderer(), job);
+        FAIL("expected an AtlasError");
+    } catch (const AtlasError& e) {
+        CHECK(std::string(e.what()).find("frames run0.e and run1.e would share the key \"run.e@0.000000\"") !=
+              std::string::npos);
+    }
+}
+
 TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     const Atlas& atlas = rig_atlas();
     CHECK(atlas.columns == 16);
@@ -126,6 +214,11 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(contract["actions"][1]["clocks"]["runtime"]["frame_cycle_ms"] == 800);
     CHECK(contract["frames"][8]["source_time_s"] == doctest::Approx(0.0));
     CHECK(contract["frames"][9]["source_time_s"] == doctest::Approx(0.1));
+    CHECK(contract["version"] == 2);
+    CHECK(contract["frames"][9]["key"] == "run.e@0.100000");
+    CHECK(contract["frames"][9]["render_sha256"] == sha256_hex(atlas.cell(0, 9).rgba));
+    CHECK(contract["frames"][9]["input_sha256"].get<std::string>().size() == 64);
+    CHECK(contract["frames"][9]["input_sha256"] != contract["frames"][8]["input_sha256"]);
 
     // The .aseprite file, read with the tests' own parser: one frame per
     // pose and view with its duration, two layers, one tag per state.
@@ -140,6 +233,11 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(doc.tags[3].from == 24);
     CHECK(doc.tags[3].to == 31);
     CHECK(doc.frames[24].cels[0].image == atlas.cell(1, 8));
+    // Each Render cel carries its frame's key as user data.
+    for (std::size_t i = 0; i < doc.frames.size(); ++i) {
+        REQUIRE(doc.frames[i].cels.size() == 1);
+        CHECK(doc.frames[i].cels[0].user_text == contract["frames"][i]["key"]);
+    }
     for (std::size_t i = 0; i < doc.tags.size(); ++i) {
         CHECK(tags[i]["name"] == doc.tags[i].name);
         CHECK(tags[i]["from"] == doc.tags[i].from);
@@ -190,7 +288,10 @@ TEST_CASE("atlas: the validator finds broken exports") {
         export_atlas(atlas, dir);
         AsepriteDocument doc = aseprite_document(atlas);
         doc.frames[7].cels[0].image.pixel(48, 40)[0] ^= 1;
-        doc.frames[2].cels.push_back({1, 0, 0, Image(2, 2)});
+        AsepriteCel correction;
+        correction.layer = 1;
+        correction.image = Image(2, 2);
+        doc.frames[2].cels.push_back(correction);
         doc.tags.pop_back();
         write_file(dir + "/atlas.aseprite", write_aseprite(doc));
         const auto report = validate_atlas(dir);
@@ -205,11 +306,19 @@ TEST_CASE("atlas: the validator finds broken exports") {
         contract["pivot"] = {40, 78};
         contract["cell_span_m"] = 2.0;
         contract["frames"][9]["projected_heading"] = {0.0, 1.0};
+        contract["frames"][10]["key"] = "run.e@0.000000";
+        contract["frames"][11]["input_sha256"] = std::string(64, '0');
+        contract["frames"][12]["render_sha256"] = std::string(64, '0');
         write_text_file(dir + "/pose-contract.json", contract.dump());
         const auto report = validate_atlas(dir);
         CHECK(has_problem(report, "contract: pivot does not match"));
         CHECK(has_problem(report, "Physical framing changed"));
         CHECK(has_problem(report, "frame 9 (run1.e): Facing does not project"));
+        CHECK(has_problem(report, "frame 10 (run2.e): key \"run.e@0.000000\" is not \"run.e@0.200000\""));
+        CHECK(has_problem(report, "frame 10 (run2.e): key \"run.e@0.000000\" is not unique"));
+        CHECK(has_problem(report, "frame 10 (run2.e): atlas.aseprite Render cel's user data is \"run.e@0.200000\""));
+        CHECK(has_problem(report, "frame 11 (run3.e): input_sha256 is not the hash"));
+        CHECK(has_problem(report, "frame 12 (run4.e): render_sha256 is not the hash"));
     }
     SUBCASE("missing or foreign files") {
         CHECK(has_problem(validate_atlas(dir), "cannot continue"));

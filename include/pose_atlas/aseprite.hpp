@@ -3,7 +3,8 @@
 // format: https://github.com/aseprite/aseprite/blob/main/docs/ase-file-specs.md
 //
 // Only what pose-atlas needs is supported: normal image layers, compressed
-// image cels, tags, slices with a pivot, frame durations, an sRGB colour
+// image cels (the reader also takes raw and linked cels), cel user data (text
+// and colour), tags, slices with a pivot, frame durations, an sRGB colour
 // profile and a palette. The reader skips chunks it does not know.
 #pragma once
 
@@ -18,11 +19,20 @@
 
 namespace pose_atlas {
 
+/// RGBA, 8 bits per channel.
+using AsepriteColour = std::array<std::uint8_t, 4>;
+
 struct AsepriteCel {
     int layer = 0;
     int x = 0;
     int y = 0;
     Image image;
+    int opacity = 255;
+    /// User data (chunk 0x2020 after the cel chunk): text, and a colour that
+    /// Aseprite shows in the timeline. Written when either is set. A linked
+    /// cel is read as a copy of the cel it links to, user data included.
+    std::string user_text;
+    std::optional<AsepriteColour> user_colour;
 };
 
 struct AsepriteFrame {
