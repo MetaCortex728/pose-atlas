@@ -172,6 +172,41 @@ TEST_CASE("atlas: frame keys") {
     }
 }
 
+TEST_CASE("atlas: corrections composite over the render") {
+    Image render(3, 1), correction(3, 1);
+    for (int x = 0; x < 3; ++x) {
+        std::uint8_t* p = render.pixel(x, 0);
+        p[0] = 200;
+        p[1] = 100;
+        p[2] = 50;
+        p[3] = 255;
+    }
+    // x = 0: transparent (the render shows); x = 1: opaque paint; x = 2:
+    // the erase colour.
+    correction.pixel(1, 0)[1] = 7;
+    correction.pixel(1, 0)[3] = 255;
+    std::uint8_t* erase = correction.pixel(2, 0);
+    erase[0] = 0xff;
+    erase[2] = 0xff;
+    erase[3] = 255;
+    const Image out = composite_cell(render, correction, kDefaultEraseColour);
+    CHECK(std::vector<std::uint8_t>(out.pixel(0, 0), out.pixel(0, 0) + 4) == std::vector<std::uint8_t>{200, 100, 50, 255});
+    CHECK(std::vector<std::uint8_t>(out.pixel(1, 0), out.pixel(1, 0) + 4) == std::vector<std::uint8_t>{0, 7, 0, 255});
+    CHECK(std::vector<std::uint8_t>(out.pixel(2, 0), out.pixel(2, 0) + 4) == std::vector<std::uint8_t>{0, 0, 0, 0});
+    // Another erase colour: magenta is paint.
+    const Image other = composite_cell(render, correction, Rgb8{1, 2, 3});
+    CHECK(std::vector<std::uint8_t>(other.pixel(2, 0), other.pixel(2, 0) + 4) ==
+          std::vector<std::uint8_t>{255, 0, 255, 255});
+    // Partial alpha blends normally (invalid in an atlas, but defined).
+    correction.pixel(1, 0)[3] = 51;
+    const Image blended = composite_cell(render, correction, kDefaultEraseColour);
+    CHECK(std::vector<std::uint8_t>(blended.pixel(1, 0), blended.pixel(1, 0) + 4) ==
+          std::vector<std::uint8_t>{160, 81, 40, 255});
+    CHECK(composite_cell(render, Image(), kDefaultEraseColour) == render);
+    CHECK_THROWS(composite_cell(render, Image(2, 1), kDefaultEraseColour));
+
+}
+
 TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     const Atlas& atlas = rig_atlas();
     CHECK(atlas.columns == 16);
@@ -215,6 +250,7 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(contract["frames"][8]["source_time_s"] == doctest::Approx(0.0));
     CHECK(contract["frames"][9]["source_time_s"] == doctest::Approx(0.1));
     CHECK(contract["version"] == 2);
+    CHECK(contract["erase_colour"] == "#ff00ff");
     CHECK(contract["frames"][9]["key"] == "run.e@0.100000");
     CHECK(contract["frames"][9]["render_sha256"] == sha256_hex(atlas.cell(0, 9).rgba));
     CHECK(contract["frames"][9]["input_sha256"].get<std::string>().size() == 64);
@@ -250,6 +286,14 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(read_file(again + "/atlas.png") == read_file(dir + "/atlas.png"));
     CHECK(read_file(again + "/atlas.aseprite") == read_file(dir + "/atlas.aseprite"));
     CHECK(read_file(again + "/pose-contract.json") == read_file(dir + "/pose-contract.json"));
+    // Without corrections atlas.png is the render alone: empty corrections
+    // give the same bytes.
+    Atlas uncorrected = atlas;
+    uncorrected.corrections.resize(uncorrected.cells.size());
+    const std::string empty = fresh_dir("atlas_export_empty_corrections");
+    export_atlas(uncorrected, empty);
+    CHECK(read_file(empty + "/atlas.png") == read_file(dir + "/atlas.png"));
+    CHECK(read_file(empty + "/atlas.aseprite") == read_file(dir + "/atlas.aseprite"));
 }
 
 TEST_CASE("atlas: the validator finds broken exports") {
@@ -290,15 +334,50 @@ TEST_CASE("atlas: the validator finds broken exports") {
         doc.frames[7].cels[0].image.pixel(48, 40)[0] ^= 1;
         AsepriteCel correction;
         correction.layer = 1;
+        correction.x = 30;
+        correction.y = 31;
         correction.image = Image(2, 2);
+        correction.image.pixel(1, 0)[3] = 100;
         doc.frames[2].cels.push_back(correction);
         doc.tags.pop_back();
         write_file(dir + "/atlas.aseprite", write_aseprite(doc));
         const auto report = validate_atlas(dir);
         CHECK(has_problem(report, "atlas.aseprite: SHA-256 differs"));
         CHECK(has_problem(report, "frame 7 (idle7.e): Import/export changed raw RGBA pixels"));
-        CHECK_FALSE(has_problem(report, "frame 2"));  // a correction is allowed
+        CHECK(has_problem(report, "frame 7 (idle7.e): atlas.png is not the composite"));
+        CHECK(has_problem(report, "frame 2 (idle2.e): corrections pixel (31, 31) has alpha 100"));
+        CHECK(has_problem(report, "atlas.aseprite: 1 corrections pixels with partial alpha"));
+        CHECK(has_problem(report, "frame 2 (idle2.e): atlas.png is not the composite of the atlas.aseprite layers "
+                                  "Render and Manual corrections (erase colour #ff00ff)"));
         CHECK(has_problem(report, "tags are not one per state"));
+        CHECK_FALSE(has_problem(report, "frame 3"));
+    }
+    SUBCASE("corrections in atlas.png") {
+        // A valid correction is accepted only when atlas.png shows it.
+        Atlas corrected = atlas;
+        corrected.corrections.resize(corrected.cells.size());
+        Image& image = corrected.corrections[4].image;
+        image = Image(96, 96);
+        for (int x = 40; x < 44; ++x) {
+            std::uint8_t* p = image.pixel(x, 50);
+            p[0] = 10;
+            p[3] = 255;
+        }
+        export_atlas(corrected, dir);
+        CHECK(validate_atlas(dir).passed());
+        const auto png = read_file(dir + "/atlas.png");
+        fs::create_directories(dir + "/plain");
+        export_atlas(atlas, dir + "/plain");
+        // Replace atlas.png (and its hash) by the render without corrections.
+        json contract = read_json(dir + "/pose-contract.json");
+        fs::copy_file(dir + "/plain/atlas.png", dir + "/atlas.png", fs::copy_options::overwrite_existing);
+        contract["files"]["atlas"]["sha256"] = sha256_hex(read_file(dir + "/atlas.png"));
+        contract.erase("erase_colour");
+        write_text_file(dir + "/pose-contract.json", contract.dump());
+        const auto report = validate_atlas(dir);
+        CHECK(has_problem(report, "frame 4 (idle4.e): atlas.png is not the composite"));
+        CHECK(has_problem(report, "contract: erase_colour is missing"));
+        CHECK(png != read_file(dir + "/atlas.png"));
     }
     SUBCASE("contract inconsistent with its profile") {
         export_atlas(atlas, dir);
@@ -318,7 +397,8 @@ TEST_CASE("atlas: the validator finds broken exports") {
         CHECK(has_problem(report, "frame 10 (run2.e): key \"run.e@0.000000\" is not unique"));
         CHECK(has_problem(report, "frame 10 (run2.e): atlas.aseprite Render cel's user data is \"run.e@0.200000\""));
         CHECK(has_problem(report, "frame 11 (run3.e): input_sha256 is not the hash"));
-        CHECK(has_problem(report, "frame 12 (run4.e): render_sha256 is not the hash"));
+        CHECK(has_problem(report, "frame 12 (run4.e): Import/export changed raw RGBA pixels (the atlas.aseprite Render "
+                                  "cel differs from the contract's render_sha256)"));
     }
     SUBCASE("missing or foreign files") {
         CHECK(has_problem(validate_atlas(dir), "cannot continue"));

@@ -26,15 +26,18 @@
 // order.
 //
 // Added: format and version of the contract, file hashes, consistency of the
-// contract with its embedded profile, and, when the contract names a palette,
-// the palette lock: every opaque pixel in the palette (plus the outline
-// colour), every alpha 0 or 255.
+// contract with its embedded profile, frame keys and input hashes, and, when
+// the contract names a palette, the palette lock of atlas.png (Render with
+// the corrections): every opaque pixel in the palette (plus the outline
+// colour), every alpha 0 or 255. Erased pixels are transparent, so excluded.
 //
 // The .aseprite file takes the place of the prototype's raw frame files and
 // its Aseprite import script: every frame's base-layer cel must hold exactly
-// the atlas cell's RGBA ("Import/export changed raw RGBA pixels") and carry
-// the frame's key, the corrections layer may hold hand corrections (carried
-// across re-renders), durations must match, there must be one
+// the render the contract hashed (render_sha256; "Import/export changed raw
+// RGBA pixels") and carry the frame's key, the corrections layer may hold
+// hand corrections (fully opaque or fully transparent pixels), the atlas.png
+// cell must be Render with the corrections on top (erase-colour pixels
+// cleared), durations must match, there must be one
 // tag per state over that state's frames, and a "foot" slice with the pivot.
 #include <cmath>
 #include <set>
@@ -199,6 +202,10 @@ private:
         }
         check_palette_lock(contract, atlas, size, columns);
         if (frames.size() != total || items.size() != total) return;
+        if (!contract.contains("erase_colour") || !contract.at("erase_colour").is_string() ||
+            !parse_hex_colour(contract.at("erase_colour").get<std::string>(), erase_colour_)) {
+            problem("contract: erase_colour is missing or not \"#rrggbb\"");
+        }
         check_aseprite(contract, profile, columns, views);
         std::vector<std::string> cell_hashes;
         std::set<std::string> keys;
@@ -255,9 +262,7 @@ private:
                    where + "input_sha256 is not the hash of the frame's inputs");
 
             const Image cell = crop(atlas, x, y, size, size);
-            expect(item.value("render_sha256", "") == sha256_hex(cell.rgba),
-                   where + "render_sha256 is not the hash of the frame's RGBA");
-            check_aseprite_cell(index, cell, key, where);
+            check_aseprite_cell(index, cell, item, key, where);
             const Bounds b = alpha_bounds(cell);
             if (b.empty()) {
                 problem(where + "blank pose");
@@ -266,6 +271,10 @@ private:
             }
             cell_hashes.push_back(sha256_hex(cell.rgba));
             report_.frames.push_back({expected_name, b, duration});
+        }
+        if (partial_corrections_ > 0) {
+            problem("atlas.aseprite: " + std::to_string(partial_corrections_) +
+                    " corrections pixels with partial alpha (neither 0 nor 255)");
         }
         auto hash_at = [&](int row, int column) {
             return cell_hashes[static_cast<std::size_t>(row * columns + column)];
@@ -368,7 +377,8 @@ private:
         const AsepriteDocument& doc = aseprite_;
         const int size = profile.cell_pixels;
         const std::size_t total = static_cast<std::size_t>(columns) * static_cast<std::size_t>(views);
-        aseprite_ok_ = doc.width == size && doc.height == size && doc.frames.size() == total;
+        aseprite_ok_ = doc.width == size && doc.height == size && doc.frames.size() == total &&
+                       doc.layers == std::vector<std::string>{kAsepriteBaseLayer, kAsepriteCorrectionsLayer};
         expect(doc.width == size && doc.height == size, "atlas.aseprite: sprite size is not the cell");
         expect(doc.frames.size() == total, "atlas.aseprite: expected one frame per pose and view");
         expect(doc.layers == std::vector<std::string>{kAsepriteBaseLayer, kAsepriteCorrectionsLayer},
@@ -391,31 +401,50 @@ private:
                "atlas.aseprite: expected one foot slice over the cell with the profile's pivot");
     }
 
-    void check_aseprite_cell(std::size_t index, const Image& cell, const std::string& key, const std::string& where) {
+    // The frame in atlas.aseprite: the Render cel carries the frame's key and
+    // holds the render the contract hashed; the corrections layer holds only
+    // fully opaque or fully transparent pixels; Render with the corrections
+    // on top (and erase pixels cleared) is the atlas.png cell.
+    void check_aseprite_cell(std::size_t index, const Image& cell, const json& item, const std::string& key,
+                             const std::string& where) {
         if (!aseprite_ok_) return;
         for (const AsepriteCel& cel : aseprite_.frames[index].cels) {
             if (cel.layer != 0) continue;
             expect(cel.user_text == key, where + "atlas.aseprite Render cel's user data is " +
                                              json(cel.user_text).dump() + ", not the frame key " + json(key).dump());
-        }
-        // Compose the base layer's cels into a cell-sized image.
-        Image base(cell.width, cell.height);
-        for (const AsepriteCel& cel : aseprite_.frames[index].cels) {
-            if (cel.layer != 0) continue;
             if (cel.x < 0 || cel.y < 0 || cel.x + cel.image.width > cell.width ||
                 cel.y + cel.image.height > cell.height) {
-                problem(where + "atlas.aseprite cel lies outside the cell");
+                problem(where + "atlas.aseprite Render cel lies outside the cell");
                 return;
             }
-            blit(base, cel.image, cel.x, cel.y);
         }
-        expect(base == cell, where + "Import/export changed raw RGBA pixels (atlas.aseprite differs from atlas.png)");
+        const Image render = flatten_layer(aseprite_, index, 0);
+        expect(item.value("render_sha256", "") == sha256_hex(render.rgba),
+               where + "Import/export changed raw RGBA pixels (the atlas.aseprite Render cel differs from the "
+                       "contract's render_sha256)");
+        const Image corrections = flatten_layer(aseprite_, index, 1);
+        for (int y = 0; y < corrections.height; ++y) {
+            for (int x = 0; x < corrections.width; ++x) {
+                const std::uint8_t a = corrections.pixel(x, y)[3];
+                if (a == 0 || a == 255) continue;
+                if (++partial_corrections_ <= 5) {
+                    problem(where + "corrections pixel (" + std::to_string(x) + ", " + std::to_string(y) +
+                            ") has alpha " + std::to_string(a) + "; corrections must be fully opaque or fully "
+                            "transparent");
+                }
+            }
+        }
+        expect(composite_cell(render, corrections, erase_colour_) == cell,
+               where + "atlas.png is not the composite of the atlas.aseprite layers " + kAsepriteBaseLayer + " and " +
+                   kAsepriteCorrectionsLayer + " (erase colour " + hex_colour(erase_colour_) + ")");
     }
 
     std::string dir_;
     std::vector<std::tuple<std::string, int, int>> expected_tags_;
     AsepriteDocument aseprite_;
     bool aseprite_ok_ = false;
+    Rgb8 erase_colour_ = kDefaultEraseColour;
+    long long partial_corrections_ = 0;
     ValidationReport report_;
 };
 

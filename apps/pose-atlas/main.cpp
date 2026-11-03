@@ -57,6 +57,8 @@ constexpr const char* kUsage =
     "      --alpha-threshold A         with a palette, coverage at which a pixel becomes\n"
     "                                  opaque; the rest becomes transparent (default 0.5)\n"
     "      --cache DIR | --no-cache    render cache (default <out>/cache)\n"
+    "      --erase-color #RRGGBB       corrections pixels of this colour make the atlas pixel\n"
+    "                                  transparent (default #ff00ff)\n"
     "      --discard-corrections       do not carry the manual corrections of an existing\n"
     "                                  atlas.aseprite into the new one (it is still backed\n"
     "                                  up as atlas.before-<hash>.aseprite)\n"
@@ -302,6 +304,10 @@ int render_command(const Args& args) {
             palette_stage = value;
         } else if (option == "--alpha-threshold") {
             alpha_threshold = value;
+        } else if (option == "--erase-color") {
+            if (!pose_atlas::parse_hex_colour(value, job.erase_colour)) {
+                throw UsageError("--erase-color: expected #rrggbb, got '" + value + "'");
+            }
         } else if (option == "--hide-material") {
             job.settings.hidden_materials.push_back(value);
         } else if (option == "--cache") {
@@ -361,6 +367,13 @@ int render_command(const Args& args) {
 
     job.profile = pose_atlas::load_profile(profile_path);
     if (!job.palette_path.empty()) job.settings.palette = pose_atlas::load_palette(job.palette_path).colours;
+    for (const auto& colour : job.settings.palette) {
+        if (colour == job.erase_colour) {
+            std::cerr << "pose-atlas: warning: the erase colour " << pose_atlas::hex_colour(colour)
+                      << " is also a palette colour; corrections cannot paint it (choose another with "
+                         "--erase-color)\n";
+        }
+    }
     std::filesystem::create_directories(out);
     if (!no_cache && cache.empty()) cache = (std::filesystem::path(out) / "cache").string();
 

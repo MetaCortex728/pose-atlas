@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "pose_atlas/atlas.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -175,6 +176,7 @@ Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& c
     atlas.settings = job.settings;
     atlas.settings_sha256 = sha256_hex(render_settings_json(job.settings));
     atlas.palette_path = job.palette_path;
+    atlas.erase_colour = job.erase_colour;
     atlas.renderer = renderer.description();
     for (const auto& spec : job.actions) {
         atlas.plans.push_back(plan_sampling(model, spec));
@@ -249,13 +251,50 @@ std::string palette_summary(const Atlas& atlas) {
            " off-palette in the output";
 }
 
+Image composite_cell(const Image& render, const Image& correction, const Rgb8& erase_colour) {
+    if (correction.width == 0) return render;
+    if (correction.width != render.width || correction.height != render.height) {
+        throw std::invalid_argument("composite_cell: the correction is not the size of the render");
+    }
+    Image out = render;
+    for (std::size_t i = 0; i < out.rgba.size(); i += 4) {
+        const std::uint8_t* s = correction.rgba.data() + i;
+        std::uint8_t* d = out.rgba.data() + i;
+        const std::uint32_t sa = s[3];
+        if (sa == 0) continue;
+        if (sa == 255) {
+            if (s[0] == erase_colour[0] && s[1] == erase_colour[1] && s[2] == erase_colour[2]) {
+                std::fill(d, d + 4, std::uint8_t{0});
+            } else {
+                std::copy(s, s + 4, d);
+            }
+            continue;
+        }
+        // Straight-alpha "over" in integers (weights scaled by 255 * 255).
+        const std::uint32_t source_weight = sa * 255;
+        const std::uint32_t target_weight = std::uint32_t{d[3]} * (255 - sa);
+        const std::uint32_t total = source_weight + target_weight;
+        for (int c = 0; c < 3; ++c) {
+            d[c] = static_cast<std::uint8_t>((s[c] * source_weight + d[c] * target_weight + total / 2) / total);
+        }
+        d[3] = static_cast<std::uint8_t>((total + 127) / 255);
+    }
+    return out;
+}
+
+Image output_cell(const Atlas& atlas, int view, int column) {
+    const std::size_t index = static_cast<std::size_t>(view * atlas.columns + column);
+    if (index >= atlas.corrections.size()) return atlas.cell(view, column);
+    return composite_cell(atlas.cell(view, column), atlas.corrections[index].image, atlas.erase_colour);
+}
+
 Image atlas_image(const Atlas& atlas) {
     const int cell = atlas.profile.cell_pixels;
     const int views = static_cast<int>(kScreenHeadings.size());
     Image image(cell * atlas.columns, cell * views);
     for (int view = 0; view < views; ++view) {
         for (int column = 0; column < atlas.columns; ++column) {
-            blit(image, atlas.cell(view, column), column * cell, view * cell);
+            blit(image, output_cell(atlas, view, column), column * cell, view * cell);
         }
     }
     return image;
@@ -436,6 +475,7 @@ std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& dir
                                    {"sha256", palette_sha256(atlas.settings.palette)},
                                    {"colors", colours}};
     }
+    c["erase_colour"] = hex_colour(atlas.erase_colour);
     c["cell"] = {p.cell_pixels, p.cell_pixels};
     c["pivot"] = {p.ground_pivot_pixels[0], p.ground_pivot_pixels[1]};
     c["meters_per_pixel"] = p.meters_per_pixel;

@@ -2,6 +2,7 @@
 // Manual corrections carried across re-renders of the generated rig.
 #include <doctest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 
@@ -47,17 +48,18 @@ AtlasJob rig_job(int idle_poses, int run_poses) {
 }
 
 // A 3 x 3 block in a palette colour at (x, y), with one pixel of the second
-// colour: what an artist paints on the corrections layer.
+// colour in the centre and the erase colour in the top-left corner: what an
+// artist paints on the corrections layer.
 AsepriteCel painted_cel(int x, int y) {
     AsepriteCel cel;
     cel.layer = 1;
     cel.x = x;
     cel.y = y;
     cel.image = Image(3, 3);
-    const Rgb8 a = test_rig::palette()[0], b = test_rig::palette()[1];
+    const Rgb8 a = test_rig::palette()[2], b = test_rig::palette()[3];  // [0] is the erase colour
     for (int py = 0; py < 3; ++py) {
         for (int px = 0; px < 3; ++px) {
-            const Rgb8& c = (px == 1 && py == 1) ? b : a;
+            const Rgb8& c = (px == 1 && py == 1) ? b : (px == 0 && py == 0) ? kDefaultEraseColour : a;
             std::uint8_t* p = cel.image.pixel(px, py);
             p[0] = c[0];
             p[1] = c[1];
@@ -116,6 +118,8 @@ TEST_CASE("corrections: carried across re-renders by frame key") {
     {
         const Atlas first = render_atlas(pose_atlas_test::renderer(), job, cache);
         export_atlas(first, dir);
+        // The render alone, for comparison.
+        fs::copy_file(dir + "/atlas.png", dir + "/plain-atlas.png");
     }
     // Nothing painted: no backup, nothing to carry.
     {
@@ -153,6 +157,20 @@ TEST_CASE("corrections: carried across re-renders by frame key") {
             CHECK(flatten_layer(after, static_cast<std::size_t>(f), 1) ==
                   flatten_layer(painted, static_cast<std::size_t>(f), 1));
         }
+        // atlas.png shows them: paint where painted, transparent where erased,
+        // the render elsewhere.
+        const Image png = decode_png(read_file(dir + "/atlas.png"));
+        const Image render = decode_png(read_file(dir + "/plain-atlas.png"));
+        const Rgb8 a = test_rig::palette()[2], b = test_rig::palette()[3];
+        for (int f : {1, 5, 6, 14}) {
+            const int x0 = (f % 8) * 96 + 40 + f % 5, y0 = (f / 8) * 96 + 30 + f % 7;
+            CHECK(png.pixel(x0, y0)[3] == 0);
+            CHECK(std::equal(b.begin(), b.end(), png.pixel(x0 + 1, y0 + 1)));
+            CHECK(std::equal(a.begin(), a.end(), png.pixel(x0 + 2, y0 + 2)));
+            CHECK(png.pixel(x0 + 2, y0 + 2)[3] == 255);
+            CHECK(std::equal(png.pixel(x0 + 3, y0), png.pixel(x0 + 3, y0) + 4, render.pixel(x0 + 3, y0)));
+        }
+        CHECK(std::equal(png.pixel(0, 0), png.pixel(0, 0) + png.rgba.size(), render.pixel(0, 0)) == false);
         const json written = json::parse(read_text_file(dir + "/corrections-report.json"));
         CHECK(written["format"] == "pose-atlas-corrections-report");
         CHECK(written["backup"] == backup);

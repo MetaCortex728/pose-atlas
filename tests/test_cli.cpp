@@ -167,6 +167,7 @@ TEST_CASE("cli: render the rig's two actions and validate them") {
     CHECK(run_cli("render \"" + rig + "\" --actions idle --out x").exit_code == 2);
     CHECK(run_cli(base + " --poses walk=4").exit_code == 2);
     CHECK(run_cli(base + " --texture-filter trilinear").exit_code == 2);
+    CHECK(run_cli(base + " --erase-color magenta").exit_code == 2);
     const std::string palette = " --palette \"" + std::string(POSE_ATLAS_SOURCE_DIR) + "/palettes/test-rig.json\"";
     CHECK(run_cli(base + " --palette-stage before").exit_code == 2);
     CHECK(run_cli(base + palette + " --palette-stage none").exit_code == 2);
@@ -180,6 +181,13 @@ TEST_CASE("cli: render the rig's two actions and validate them") {
     CHECK(locked.exit_code == 0);
     CHECK(locked.output.find("palette: before_after, 16 colours: ") != std::string::npos);
     CHECK(locked.output.find(" 0 off-palette in the output") != std::string::npos);
+    // The rig's palette holds the default erase colour (its pivot marker).
+    CHECK(locked.output.find("warning: the erase colour #ff00ff is also a palette colour") != std::string::npos);
+    const auto other_erase = run_cli(palette_base + " --erase-color \"#00FF01\"");
+    CHECK(other_erase.exit_code == 0);
+    CHECK(other_erase.output.find("warning: the erase colour") == std::string::npos);
+    CHECK(pose_atlas::read_text_file(palette_out + "/pose-contract.json").find("\"erase_colour\": \"#00ff01\"") !=
+          std::string::npos);
     CHECK(run_cli("validate \"" + palette_out + "\"").exit_code == 0);
     // Snapping only before the downsample is not palette-locked: the export
     // is written, but fails validation.

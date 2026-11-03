@@ -34,6 +34,10 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+/// A corrections pixel of exactly this colour (fully opaque) makes the atlas
+/// pixel fully transparent: an upper layer cannot erase.
+inline constexpr Rgb8 kDefaultEraseColour = {0xff, 0x00, 0xff};
+
 struct AtlasJob {
     std::string model_path;
     Profile profile;
@@ -41,6 +45,9 @@ struct AtlasJob {
     RenderSettings settings;
     /// Where settings.palette came from, for the contract (may be empty).
     std::string palette_path;
+    /// See kDefaultEraseColour. When it is also a palette colour,
+    /// corrections cannot paint that colour.
+    Rgb8 erase_colour = kDefaultEraseColour;
 };
 
 /// A hand correction of one frame: a cell-sized image painted over the
@@ -72,6 +79,7 @@ struct Atlas {
     RenderSettings settings;
     std::string settings_sha256;  // of render_settings_json(settings)
     std::string palette_path;     // from the job
+    Rgb8 erase_colour = kDefaultEraseColour;  // from the job
     std::string renderer;         // Renderer::description()
     // Layout.
     std::vector<SamplingPlan> plans;               // one per action, column order
@@ -144,7 +152,16 @@ std::string frame_input_sha256(const std::string& model_sha256, const std::strin
 /// `<key>.palette.json`; an entry without them is rendered again.
 Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& cache_dir = "");
 
-/// The whole atlas image.
+/// A rendered cell with its correction on top (normal blend, straight
+/// alpha). A fully opaque correction pixel of `erase_colour` makes the pixel
+/// fully transparent (0, 0, 0, 0). An empty correction leaves the render.
+Image composite_cell(const Image& render, const Image& correction, const Rgb8& erase_colour);
+
+/// The cell of one frame as it appears in atlas.png: the render with its
+/// correction, if any.
+Image output_cell(const Atlas& atlas, int view, int column);
+
+/// The whole atlas image: every output_cell().
 Image atlas_image(const Atlas& atlas);
 
 /// Aseprite-style JSON (json-array format) for an atlas image file name.
