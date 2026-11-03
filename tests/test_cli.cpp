@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "cli_support.hpp"
+#include "pose_atlas/aseprite.hpp"
 #include "pose_atlas/image.hpp"
 #include "pose_atlas/test_rig.hpp"
 
@@ -124,6 +125,38 @@ TEST_CASE("cli: render the rig's two actions and validate them") {
     CHECK(changed.output.find("idle: e=reused ne=reused") != std::string::npos);
     CHECK(changed.output.find("run: e=rendered") != std::string::npos);
     CHECK(run_cli("validate \"" + out + "\"").exit_code == 0);
+    CHECK(changed.output.find("corrections: none to carry; report in ") != std::string::npos);
+
+    // A hand correction on idle0.e survives a re-render; the previous file
+    // is backed up.
+    {
+        pose_atlas::AsepriteDocument doc = pose_atlas::read_aseprite(pose_atlas::read_file(out + "/atlas.aseprite"));
+        pose_atlas::AsepriteCel cel;
+        cel.layer = 1;
+        cel.x = 120;
+        cel.y = 100;
+        cel.image = pose_atlas::Image(2, 2);
+        for (int i = 0; i < 4; ++i) cel.image.rgba[static_cast<std::size_t>(i) * 4 + 3] = 255;
+        doc.frames[0].cels.push_back(cel);
+        pose_atlas::write_file(out + "/atlas.aseprite", pose_atlas::write_aseprite(doc));
+    }
+    const auto carried = run_cli(base + " --poses idle=8,run=6");
+    CHECK(carried.exit_code == 0);
+    CHECK(carried.output.find("corrections: 1 carried (0 stale), 0 orphaned; previous file kept as atlas.before-") !=
+          std::string::npos);
+    CHECK(pose_atlas::read_text_file(out + "/corrections-report.json").find("\"key\": \"idle.e@0.000000\"") !=
+          std::string::npos);
+    const auto discarded = run_cli(base + " --poses idle=8,run=6 --discard-corrections");
+    CHECK(discarded.exit_code == 0);
+    CHECK(discarded.output.find("corrections: discarded (--discard-corrections); previous file kept as atlas.before-") !=
+          std::string::npos);
+    int backups = 0;
+    for (const auto& entry : fs::directory_iterator(out)) {
+        backups += entry.path().filename().string().rfind("atlas.before-", 0) == 0 ? 1 : 0;
+    }
+    // The re-render with the carried correction wrote the same bytes as the
+    // hand-painted file, so both have the same (single) backup.
+    CHECK(backups == 1);
 
     // A tampered export fails validation.
     pose_atlas::write_text_file(out + "/atlas.json", "{\"frames\": [], \"meta\": {}}");

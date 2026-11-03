@@ -75,6 +75,14 @@ public:
 /// not fit the format (sizes, counts, names beyond 16-bit fields).
 std::vector<std::uint8_t> write_aseprite(const AsepriteDocument& document);
 
+/// The cel of `layer` in frame `frame` drawn onto a transparent image of the
+/// sprite's size (clipped to it), with the cel's opacity applied to alpha.
+/// Transparent when the frame has no cel on that layer.
+Image flatten_layer(const AsepriteDocument& document, std::size_t frame, int layer);
+
+/// Index of the layer with this name, or -1.
+int find_layer(const AsepriteDocument& document, const std::string& name);
+
 /// Parse a 32-bit RGBA file; throws AsepriteError.
 AsepriteDocument read_aseprite(const std::vector<std::uint8_t>& bytes, const std::string& source = "aseprite");
 

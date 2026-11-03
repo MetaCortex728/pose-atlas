@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "pose_atlas/aseprite.hpp"
 
+#include <algorithm>
 #include <limits>
 
 namespace pose_atlas {
@@ -288,6 +289,34 @@ std::vector<std::uint8_t> write_aseprite(const AsepriteDocument& doc) {
     }
     w.patch_dword(0, w.size());
     return std::move(w.data());
+}
+
+Image flatten_layer(const AsepriteDocument& doc, std::size_t frame, int layer) {
+    Image out(doc.width, doc.height);
+    if (frame >= doc.frames.size()) return out;
+    for (const AsepriteCel& cel : doc.frames[frame].cels) {
+        if (cel.layer != layer) continue;
+        for (int y = 0; y < cel.image.height; ++y) {
+            const int ty = cel.y + y;
+            if (ty < 0 || ty >= out.height) continue;
+            for (int x = 0; x < cel.image.width; ++x) {
+                const int tx = cel.x + x;
+                if (tx < 0 || tx >= out.width) continue;
+                const std::uint8_t* p = cel.image.pixel(x, y);
+                std::uint8_t* q = out.pixel(tx, ty);
+                std::copy(p, p + 4, q);
+                if (cel.opacity != 255) q[3] = static_cast<std::uint8_t>((p[3] * cel.opacity + 127) / 255);
+            }
+        }
+    }
+    return out;
+}
+
+int find_layer(const AsepriteDocument& doc, const std::string& name) {
+    for (std::size_t i = 0; i < doc.layers.size(); ++i) {
+        if (doc.layers[i] == name) return static_cast<int>(i);
+    }
+    return -1;
 }
 
 AsepriteDocument read_aseprite(const std::vector<std::uint8_t>& bytes, const std::string& source) {

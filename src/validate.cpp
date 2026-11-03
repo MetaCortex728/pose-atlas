@@ -32,8 +32,9 @@
 //
 // The .aseprite file takes the place of the prototype's raw frame files and
 // its Aseprite import script: every frame's base-layer cel must hold exactly
-// the atlas cell's RGBA ("Import/export changed raw RGBA pixels"), the
-// corrections layer must be empty, durations must match, there must be one
+// the atlas cell's RGBA ("Import/export changed raw RGBA pixels") and carry
+// the frame's key, the corrections layer may hold hand corrections (carried
+// across re-renders), durations must match, there must be one
 // tag per state over that state's frames, and a "foot" slice with the pivot.
 #include <cmath>
 #include <set>
@@ -377,10 +378,6 @@ private:
         for (std::size_t i = 0; i < doc.frames.size() && i < items.size(); ++i) {
             expect(doc.frames[i].duration_ms == items[i].at("duration_ms").get<int>(),
                    "atlas.aseprite: frame " + std::to_string(i) + " duration differs from the contract");
-            for (const AsepriteCel& cel : doc.frames[i].cels) {
-                expect(cel.layer == 0, "atlas.aseprite: frame " + std::to_string(i) +
-                                           " has a cel on the corrections layer (not empty)");
-            }
         }
         // One tag per state: action.view over its poses in that view.
         std::vector<std::tuple<std::string, int, int>> found;

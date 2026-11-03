@@ -55,6 +55,7 @@ add_library(pose_atlas STATIC
     src/aseprite.cpp
     src/atlas.cpp
     src/camera.cpp
+    src/corrections.cpp
     src/gltf_loader.cpp
     src/image.cpp
     src/math.cpp

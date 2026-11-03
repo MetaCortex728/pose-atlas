@@ -43,6 +43,17 @@ struct AtlasJob {
     std::string palette_path;
 };
 
+/// A hand correction of one frame: a cell-sized image painted over the
+/// render on the "Manual corrections" layer.
+struct FrameCorrection {
+    Image image;         // cell-sized; empty (0 x 0) = no correction
+    bool stale = false;  // the render under it changed since it was painted
+};
+
+/// User data of a stale corrections cel in atlas.aseprite.
+inline constexpr const char* kStaleCorrectionText = "stale: render changed";
+inline constexpr AsepriteColour kStaleCorrectionColour = {0xff, 0x66, 0x00, 0xff};
+
 /// What happened to one (action, view) render.
 struct RenderRecord {
     std::string action;
@@ -69,6 +80,8 @@ struct Atlas {
     int columns = 0;
     std::vector<Image> cells;                      // index = view * columns + column
     std::vector<RenderRecord> renders;             // one per (action, view)
+    /// Hand corrections: empty, or one per frame in atlas order.
+    std::vector<FrameCorrection> corrections;
 
     const Image& cell(int view, int column) const {
         return cells[static_cast<std::size_t>(view * columns + column)];
@@ -140,8 +153,9 @@ std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_fil
 /// The atlas as an Aseprite document: one frame per cell in atlas order (view
 /// by view, the poses of each view in column order) with its duration, a
 /// base layer "Render" holding the cell (its user data text is the frame's
-/// key), an empty layer "Manual corrections"
-/// above it, one tag per state ("<action>.<view>" over that action's poses in
+/// key), a layer "Manual corrections" above it holding the atlas's
+/// corrections (trimmed to their pixels; a stale one has the user data text
+/// kStaleCorrectionText and colour kStaleCorrectionColour), one tag per state ("<action>.<view>" over that action's poses in
 /// that view) and a "foot" slice over the cell with the pivot.
 AsepriteDocument aseprite_document(const Atlas& atlas);
 

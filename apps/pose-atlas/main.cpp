@@ -14,6 +14,7 @@
 
 #include "pose_atlas/atlas.hpp"
 #include "pose_atlas/camera.hpp"
+#include "pose_atlas/corrections.hpp"
 #include "pose_atlas/model.hpp"
 #include "pose_atlas/profile.hpp"
 #include "pose_atlas/sampling.hpp"
@@ -56,6 +57,9 @@ constexpr const char* kUsage =
     "      --alpha-threshold A         with a palette, coverage at which a pixel becomes\n"
     "                                  opaque; the rest becomes transparent (default 0.5)\n"
     "      --cache DIR | --no-cache    render cache (default <out>/cache)\n"
+    "      --discard-corrections       do not carry the manual corrections of an existing\n"
+    "                                  atlas.aseprite into the new one (it is still backed\n"
+    "                                  up as atlas.before-<hash>.aseprite)\n"
     "  validate <dir> [--report FILE]  check an exported directory against its contract\n"
     "  version                         print the version\n"
     "  help                            print this help\n";
@@ -253,7 +257,7 @@ int render_command(const Args& args) {
     job.model_path = args[1];
     std::string profile_path, actions, out, cache, poses = "8";
     std::string palette_stage, alpha_threshold;
-    bool no_cache = false, have_rate = false, have_frame = false;
+    bool no_cache = false, have_rate = false, have_frame = false, discard_corrections = false;
     pose_atlas::Cadence cadence;
     for (std::size_t i = 2; i < args.size(); ++i) {
         const std::string& option = args[i];
@@ -263,6 +267,10 @@ int render_command(const Args& args) {
         }
         if (option == "--no-cache") {
             no_cache = true;
+            continue;
+        }
+        if (option == "--discard-corrections") {
+            discard_corrections = true;
             continue;
         }
         if (i + 1 >= args.size()) throw UsageError(option + ": missing value");
@@ -356,8 +364,13 @@ int render_command(const Args& args) {
     std::filesystem::create_directories(out);
     if (!no_cache && cache.empty()) cache = (std::filesystem::path(out) / "cache").string();
 
+    // Manual corrections in an existing atlas.aseprite: backed up and read
+    // before anything is rendered or overwritten.
+    const pose_atlas::ExistingCorrections existing = pose_atlas::read_existing_corrections(out, discard_corrections);
+
     pose_atlas::Renderer renderer;
-    const pose_atlas::Atlas atlas = pose_atlas::render_atlas(renderer, job, no_cache ? "" : cache);
+    pose_atlas::Atlas atlas = pose_atlas::render_atlas(renderer, job, no_cache ? "" : cache);
+    const pose_atlas::CorrectionsReport corrections = pose_atlas::carry_corrections(existing, atlas);
     int reused = 0;
     std::string line;
     for (const auto& r : atlas.renders) {
@@ -375,6 +388,13 @@ int render_command(const Args& args) {
     for (const std::string& file : pose_atlas::export_atlas(atlas, out)) {
         std::cout << "wrote " << (std::filesystem::path(out) / file).string() << "\n";
     }
+    const std::string report_path = (std::filesystem::path(out) / pose_atlas::kCorrectionsReport).string();
+    pose_atlas::write_text_file(report_path, corrections.to_json());
+    for (const auto& orphan : corrections.orphaned) {
+        std::cout << "orphaned correction: " << orphan.key << " (old frame " << orphan.old_frame << "): "
+                  << orphan.reason << "\n";
+    }
+    std::cout << corrections.summary() << "; report in " << report_path << "\n";
     const pose_atlas::ValidationReport report = pose_atlas::validate_atlas(out);
     for (const auto& problem : report.problems) std::cerr << "validate: " << problem << "\n";
     if (!report.passed()) {

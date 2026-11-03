@@ -366,13 +366,39 @@ AsepriteDocument aseprite_document(const Atlas& atlas) {
     doc.width = cell;
     doc.height = cell;
     doc.layers = {kAsepriteBaseLayer, kAsepriteCorrectionsLayer};
-    for (const AtlasFrame& f : atlas_frames(atlas)) {
+    const std::vector<AtlasFrame> frames = atlas_frames(atlas);
+    if (!atlas.corrections.empty()) {
+        if (atlas.corrections.size() != frames.size()) throw AtlasError("corrections: expected one entry per frame");
+        for (const FrameCorrection& c : atlas.corrections) {
+            if (c.image.width != 0 && (c.image.width != cell || c.image.height != cell)) {
+                throw AtlasError("corrections: a correction is not cell-sized");
+            }
+        }
+    }
+    for (const AtlasFrame& f : frames) {
         AsepriteFrame frame;
         frame.duration_ms = atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)];
         AsepriteCel cel;
         cel.image = atlas.cell(f.view, f.column);
         cel.user_text = f.key;
         frame.cels.push_back(std::move(cel));
+        const std::size_t index = doc.frames.size();
+        if (index < atlas.corrections.size() && atlas.corrections[index].image.width > 0) {
+            const FrameCorrection& correction = atlas.corrections[index];
+            const Bounds b = alpha_bounds(correction.image);
+            if (!b.empty()) {
+                AsepriteCel painted;
+                painted.layer = 1;
+                painted.x = b.x0;
+                painted.y = b.y0;
+                painted.image = crop(correction.image, b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+                if (correction.stale) {
+                    painted.user_text = kStaleCorrectionText;
+                    painted.user_colour = kStaleCorrectionColour;
+                }
+                frame.cels.push_back(std::move(painted));
+            }
+        }
         doc.frames.push_back(std::move(frame));
     }
     doc.tags = state_tags(atlas);

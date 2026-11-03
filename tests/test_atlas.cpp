@@ -297,7 +297,7 @@ TEST_CASE("atlas: the validator finds broken exports") {
         const auto report = validate_atlas(dir);
         CHECK(has_problem(report, "atlas.aseprite: SHA-256 differs"));
         CHECK(has_problem(report, "frame 7 (idle7.e): Import/export changed raw RGBA pixels"));
-        CHECK(has_problem(report, "frame 2 has a cel on the corrections layer"));
+        CHECK_FALSE(has_problem(report, "frame 2"));  // a correction is allowed
         CHECK(has_problem(report, "tags are not one per state"));
     }
     SUBCASE("contract inconsistent with its profile") {
