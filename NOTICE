@@ -10,3 +10,8 @@ licence.
 - doctest 2.5.3 by Viktor Kirilov, https://github.com/doctest/doctest
   MIT licence, third_party/doctest/LICENSE.txt. Unit tests only.
   doctest.h is an unmodified copy of the upstream single header.
+
+- JSON for Modern C++ 3.11.3 by Niels Lohmann, https://github.com/nlohmann/json
+  MIT licence, third_party/nlohmann_json/LICENSE.MIT.
+  include/nlohmann/json.hpp is an unmodified copy of the single header
+  released as json.hpp with v3.11.3.

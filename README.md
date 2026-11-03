@@ -18,6 +18,8 @@ cmake --preset default && cmake --build --preset default && ctest --preset defau
 
 Presets: `default` (GCC), `clang`, `asan` (GCC with AddressSanitizer and UndefinedBehaviorSanitizer), and `ci-default`, `ci-clang`, `ci-asan`, the same with warnings as errors, which CI runs on Linux. The build directory is `build/<preset>`; the tool is `build/<preset>/apps/pose-atlas`. The `Dockerfile` provides the Ubuntu 22.04 toolchain that CI uses.
 
+Documentation: [docs/profile.md](docs/profile.md) describes the camera profile.
+
 ## Licence
 
 Licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

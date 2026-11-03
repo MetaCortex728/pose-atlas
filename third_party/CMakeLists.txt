@@ -4,3 +4,7 @@
 add_library(pose_atlas_doctest INTERFACE)
 target_include_directories(pose_atlas_doctest SYSTEM INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/doctest)
+
+add_library(pose_atlas_json INTERFACE)
+target_include_directories(pose_atlas_json SYSTEM INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/nlohmann_json/include)
