@@ -10,6 +10,7 @@
 
 #include "pose_atlas/camera.hpp"
 #include "pose_atlas/profile.hpp"
+#include "pose_atlas/test_rig.hpp"
 #include "pose_atlas/version.hpp"
 
 namespace {
@@ -23,6 +24,7 @@ constexpr const char* kUsage =
     "commands:\n"
     "  profile check <profile.json>    validate a profile and print a summary\n"
     "  profile guides <profile.json>   print the eight camera guides as JSON\n"
+    "  make-test-rig <out.glb>         write the generated test character\n"
     "  version                         print the version\n"
     "  help                            print this help\n";
 
@@ -89,6 +91,12 @@ int run(const Args& args) {
         return 0;
     }
     if (command == "profile") return profile_command(args);
+    if (command == "make-test-rig") {
+        if (args.size() != 2) throw UsageError("make-test-rig: expected 'make-test-rig <out.glb>'");
+        pose_atlas::test_rig::write_glb(args[1]);
+        std::cout << "wrote " << args[1] << "\n";
+        return 0;
+    }
     throw UsageError("unknown command '" + command + "'");
 }
 

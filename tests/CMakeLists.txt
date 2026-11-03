@@ -2,9 +2,10 @@ add_executable(pose_atlas_tests
     main.cpp
     test_camera.cpp
     test_profile.cpp
+    test_test_rig.cpp
     test_version.cpp)
 target_link_libraries(pose_atlas_tests PRIVATE
-    pose_atlas::pose_atlas pose_atlas_doctest pose_atlas_json pose_atlas_options)
+    pose_atlas::pose_atlas pose_atlas_doctest pose_atlas_json pose_atlas_cgltf pose_atlas_options)
 target_compile_definitions(pose_atlas_tests PRIVATE
     POSE_ATLAS_EXPECTED_VERSION="${PROJECT_VERSION}"
     POSE_ATLAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}"

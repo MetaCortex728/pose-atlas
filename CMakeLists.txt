@@ -49,6 +49,7 @@ add_subdirectory(third_party)
 add_library(pose_atlas STATIC
     src/camera.cpp
     src/profile.cpp
+    src/test_rig.cpp
     src/version.cpp)
 add_library(pose_atlas::pose_atlas ALIAS pose_atlas)
 target_include_directories(pose_atlas PUBLIC

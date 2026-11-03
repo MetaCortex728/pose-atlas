@@ -15,3 +15,8 @@ licence.
   MIT licence, third_party/nlohmann_json/LICENSE.MIT.
   include/nlohmann/json.hpp is an unmodified copy of the single header
   released as json.hpp with v3.11.3.
+
+- cgltf 1.15 by Johannes Kuhlmann, https://github.com/jkuhlmann/cgltf
+  MIT licence, third_party/cgltf/LICENSE.
+  cgltf.h is an unmodified copy of the header from the v1.15 release;
+  cgltf_impl.c only compiles its implementation.
