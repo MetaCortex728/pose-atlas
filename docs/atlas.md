@@ -28,3 +28,9 @@ Durations are whole milliseconds: the runtime start and end of each pose are rou
 - the eight views of every pose differ (directions changed), and no action of several poses shows a single image throughout a view (poses changed).
 
 Not ported: the prototype's fixed pose-name and schema lists, its 64/96 px cells and 208 cm span, and its binary-alpha rule (filtered edges have partial alpha). Its "every cell differs" rule became the two rules above, because a real animation can repeat a pose; the rig's run does, from the side.
+
+## Cache
+
+With a cache directory (`pose-atlas render` uses `<out>/cache` unless given `--cache`), each (action, view) is keyed by SHA-256 over the model file's hash, the profile's hash (all its values, including the filter and supersampling), the render settings' hash, the renderer description (GL renderer and Mesa version), the action name and its sampled source times, and the view. A stored strip `<key>.png` with that action's poses in that view is reused; otherwise the poses are rendered and the strip is stored. So changing one action's sampling re-renders only that action's eight views; changing the runtime cadence re-renders nothing (it only changes durations); changing the model file, the profile, the settings or the Mesa version re-renders everything. Entries that are missing, unreadable or of the wrong size are rendered again. The contract records each render's key, but not whether it was reused, so a cached and an uncached export are byte-identical.
+
+The model file is hashed as a whole, so editing one animation in the GLB also re-renders the other actions; keying by the data each action actually uses is possible later.

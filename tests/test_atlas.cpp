@@ -194,3 +194,58 @@ TEST_CASE("atlas: the validator finds broken exports") {
         CHECK(has_problem(validate_atlas(dir), "not a pose-atlas-contract"));
     }
 }
+
+TEST_CASE("atlas: the content-hash cache re-renders only what changed") {
+    const std::string cache = fresh_dir("atlas_cache");
+    auto& renderer = pose_atlas_test::renderer();
+    auto reused = [](const Atlas& atlas, const std::string& action) {
+        int n = 0;
+        for (const auto& r : atlas.renders) n += (r.action == action && r.reused) ? 1 : 0;
+        return n;
+    };
+
+    AtlasJob job = rig_job(4);
+    const Atlas first = render_atlas(renderer, job, cache);
+    CHECK(reused(first, "idle") == 0);
+    CHECK(reused(first, "run") == 0);
+    CHECK(std::distance(fs::directory_iterator(cache), fs::directory_iterator()) == 16);
+
+    // Same inputs: everything comes from the cache, with the same pixels.
+    const Atlas second = render_atlas(renderer, job, cache);
+    CHECK(reused(second, "idle") == 8);
+    CHECK(reused(second, "run") == 8);
+    CHECK(second.cells == first.cells);
+
+    // Change one action (its pose count): only that action is rendered again.
+    job.actions[1].pose_count = 6;
+    const Atlas third = render_atlas(renderer, job, cache);
+    CHECK(reused(third, "idle") == 8);
+    CHECK(reused(third, "run") == 0);
+    CHECK(third.cell(3, 1) == first.cell(3, 1));
+    // ... and it matches an uncached render.
+    const Atlas uncached = render_atlas(renderer, job);
+    CHECK(uncached.cells == third.cells);
+    for (std::size_t i = 0; i < third.renders.size(); ++i) CHECK(third.renders[i].key == uncached.renders[i].key);
+
+    // A different runtime cadence does not change the pixels: all reused.
+    job.actions[0].cadence.kind = Cadence::Kind::FixedFrame;
+    job.actions[0].cadence.frame_ms = 120;
+    const Atlas fourth = render_atlas(renderer, job, cache);
+    CHECK(reused(fourth, "idle") == 8);
+    CHECK(reused(fourth, "run") == 8);
+    CHECK(fourth.durations_ms[0] == std::vector<int>(4, 120));
+
+    // Render settings and the profile key every render.
+    job.settings.style.outline = true;
+    CHECK(reused(render_atlas(renderer, job, cache), "idle") == 0);
+    job.settings = {};
+    job.profile.resampling_filter = ResampleFilter::Box;
+    CHECK(reused(render_atlas(renderer, job, cache), "idle") == 0);
+
+    // A damaged entry is rendered again rather than trusted.
+    job = rig_job(4);
+    write_file(cache + "/" + first.renders[0].key + ".png", {1, 2, 3});
+    const Atlas repaired = render_atlas(renderer, job, cache);
+    CHECK(reused(repaired, "idle") == 7);
+    CHECK(repaired.cells == first.cells);
+}

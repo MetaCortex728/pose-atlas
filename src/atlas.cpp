@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <set>
 
 #include <nlohmann/json.hpp>
@@ -68,7 +69,39 @@ std::string render_key(const Atlas& atlas, const SamplingPlan& plan, int view) {
     return sha256_hex(text);
 }
 
-Atlas render_atlas(Renderer& renderer, const AtlasJob& job) {
+namespace {
+
+// A cached strip: the poses of one action in one view, side by side. Returns
+// false when the entry is missing or unusable (it is then rendered again).
+bool load_strip(const std::string& path, int cell, int poses, std::vector<Image>& out) {
+    std::vector<std::uint8_t> bytes;
+    try {
+        bytes = read_file(path);
+    } catch (const std::exception&) {
+        return false;
+    }
+    Image strip;
+    try {
+        strip = decode_png(bytes, path);
+    } catch (const ImageError&) {
+        return false;
+    }
+    if (strip.width != cell * poses || strip.height != cell) return false;
+    out.clear();
+    for (int i = 0; i < poses; ++i) out.push_back(crop(strip, i * cell, 0, cell, cell));
+    return true;
+}
+
+void store_strip(const std::string& path, const std::vector<Image>& cells) {
+    const int cell = cells.front().width;
+    Image strip(cell * static_cast<int>(cells.size()), cell);
+    for (std::size_t i = 0; i < cells.size(); ++i) blit(strip, cells[i], static_cast<int>(i) * cell, 0);
+    write_file(path, encode_png(strip));
+}
+
+}  // namespace
+
+Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& cache_dir) {
     if (job.actions.empty()) throw std::invalid_argument("render_atlas: no actions");
     const auto problems = validate_profile(job.profile);
     if (!problems.empty()) throw ProfileError("profile", problems);
@@ -99,19 +132,35 @@ Atlas render_atlas(Renderer& renderer, const AtlasJob& job) {
     atlas.columns = static_cast<int>(atlas.pose_names.size());
     atlas.cells.resize(static_cast<std::size_t>(atlas.columns) * kScreenHeadings.size());
 
+    if (!cache_dir.empty()) {
+        std::error_code error;
+        std::filesystem::create_directories(cache_dir, error);
+        if (error) throw std::runtime_error(cache_dir + ": cannot create the cache directory (" + error.message() + ")");
+    }
+    const int cell = job.profile.cell_pixels;
     int first_column = 0;
     for (const SamplingPlan& plan : atlas.plans) {
         const Animation& animation = model.animation(plan.action);
-        std::vector<Pose> poses;
-        for (const Sample& s : plan.samples) poses.push_back(evaluate(model, &animation, s.source_time_s));
+        std::vector<Pose> poses;  // evaluated on first use
         for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
-            const CameraGuide guide = camera_guide(job.profile, view);
-            for (std::size_t i = 0; i < poses.size(); ++i) {
-                atlas.cells[static_cast<std::size_t>(view * atlas.columns + first_column) + i] =
-                    renderer.render(model, poses[i], job.profile, guide, job.settings);
+            RenderRecord record{plan.action, kScreenHeadings[static_cast<std::size_t>(view)],
+                                render_key(atlas, plan, view), false};
+            const std::string entry = cache_dir.empty() ? "" : join_path(cache_dir, record.key + ".png");
+            std::vector<Image> cells;
+            if (!entry.empty() && load_strip(entry, cell, plan.pose_count, cells)) {
+                record.reused = true;
+            } else {
+                if (poses.empty()) {
+                    for (const Sample& s : plan.samples) poses.push_back(evaluate(model, &animation, s.source_time_s));
+                }
+                const CameraGuide guide = camera_guide(job.profile, view);
+                for (const Pose& pose : poses) cells.push_back(renderer.render(model, pose, job.profile, guide, job.settings));
+                if (!entry.empty()) store_strip(entry, cells);
             }
-            atlas.renders.push_back(
-                {plan.action, kScreenHeadings[static_cast<std::size_t>(view)], render_key(atlas, plan, view)});
+            for (std::size_t i = 0; i < cells.size(); ++i) {
+                atlas.cells[static_cast<std::size_t>(view * atlas.columns + first_column) + i] = std::move(cells[i]);
+            }
+            atlas.renders.push_back(std::move(record));
         }
         first_column += plan.pose_count;
     }

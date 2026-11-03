@@ -38,7 +38,8 @@ struct AtlasJob {
 struct RenderRecord {
     std::string action;
     std::string view;
-    std::string key;  // content hash of the render's inputs
+    std::string key;      // content hash of the render's inputs
+    bool reused = false;  // taken from the cache instead of rendered
 };
 
 struct Atlas {
@@ -74,8 +75,12 @@ std::vector<int> frame_durations_ms(const SamplingPlan& plan);
 /// action name, its sampled source times and the view.
 std::string render_key(const Atlas& atlas, const SamplingPlan& plan, int view);
 
-/// Sample and render every action in eight views.
-Atlas render_atlas(Renderer& renderer, const AtlasJob& job);
+/// Sample and render every action in eight views. With a non-empty
+/// `cache_dir` (created if missing), each (action, view) is first looked up
+/// by its render key: a stored strip of that action's poses in that view is
+/// reused, otherwise the poses are rendered and the strip is stored as
+/// `<key>.png`. Atlas::renders reports which renders were reused.
+Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& cache_dir = "");
 
 /// The whole atlas image.
 Image atlas_image(const Atlas& atlas);
