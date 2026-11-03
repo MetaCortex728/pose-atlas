@@ -2,11 +2,13 @@
 #include <doctest.h>
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <vector>
 
 #include "cli_support.hpp"
+#include "pose_atlas/image.hpp"
 #include "pose_atlas/test_rig.hpp"
 
 using pose_atlas_test::run_cli;
@@ -81,4 +83,57 @@ TEST_CASE("cli: inspect and plan the generated rig") {
     const auto missing = run_cli("plan " + quoted + " --action walk --poses 8");
     CHECK(missing.exit_code == 1);
     CHECK(missing.output.find("no animation \"walk\"") != std::string::npos);
+}
+
+TEST_CASE("cli: render the rig's two actions and validate them") {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::path(POSE_ATLAS_TEST_OUTPUT_DIR) / "cli_render";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const std::string rig = (root / "test-rig.glb").string();
+    const std::string out = (root / "out").string();
+    const std::string profile = std::string(POSE_ATLAS_SOURCE_DIR) + "/profiles/quarter-view-gltf.json";
+    REQUIRE(run_cli("make-test-rig \"" + rig + "\"").exit_code == 0);
+    const std::string base =
+        "render \"" + rig + "\" --profile \"" + profile + "\" --actions idle,run --out \"" + out + "\"";
+
+    const auto first = run_cli(base);
+    CHECK(first.exit_code == 0);
+    CHECK(first.output.find("renders: 16 rendered, 0 reused") != std::string::npos);
+    CHECK(first.output.find("validated 128 frames (16 poses x 8 views)") != std::string::npos);
+    for (const char* file : {"atlas.png", "atlas.json", "atlas.aseprite", "pose-contract.json"}) {
+        CHECK(fs::exists(fs::path(out) / file));
+    }
+    const auto atlas_bytes = pose_atlas::read_file(out + "/atlas.png");
+
+    const auto valid = run_cli("validate \"" + out + "\" --report \"" + (root / "report.json").string() + "\"");
+    CHECK(valid.exit_code == 0);
+    CHECK(valid.output.find("POSE_VALIDATION_PASS 128 frames") != std::string::npos);
+    CHECK(fs::exists(root / "report.json"));
+
+    // Unchanged inputs: everything reused, same atlas bytes.
+    const auto again = run_cli(base);
+    CHECK(again.exit_code == 0);
+    CHECK(again.output.find("renders: 0 rendered, 16 reused") != std::string::npos);
+    CHECK(pose_atlas::read_file(out + "/atlas.png") == atlas_bytes);
+
+    // One action changed: only its eight views are rendered.
+    const auto changed = run_cli(base + " --poses idle=8,run=6");
+    CHECK(changed.exit_code == 0);
+    CHECK(changed.output.find("renders: 8 rendered, 8 reused") != std::string::npos);
+    CHECK(changed.output.find("idle: e=reused ne=reused") != std::string::npos);
+    CHECK(changed.output.find("run: e=rendered") != std::string::npos);
+    CHECK(run_cli("validate \"" + out + "\"").exit_code == 0);
+
+    // A tampered export fails validation.
+    pose_atlas::write_text_file(out + "/atlas.json", "{\"frames\": [], \"meta\": {}}");
+    const auto broken = run_cli("validate \"" + out + "\"");
+    CHECK(broken.exit_code == 1);
+    CHECK(broken.output.find("POSE_VALIDATION_FAIL") != std::string::npos);
+
+    CHECK(run_cli("render \"" + rig + "\" --actions idle --out x").exit_code == 2);
+    CHECK(run_cli(base + " --poses walk=4").exit_code == 2);
+    CHECK(run_cli("render \"" + rig + "\" --profile \"" + profile + "\" --actions jump --out \"" + out + "\"")
+              .exit_code == 1);
+    CHECK(run_cli("validate").exit_code == 2);
 }

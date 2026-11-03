@@ -8,6 +8,18 @@ Han built the first version in October 2026 for his own Unreal game, with OpenAI
 
 `prototype/` keeps the parts that do not depend on Blender, unchanged except for one default tool path: the projection profile and its loader (`quarter-view-profile.json`, `dan_projection.py`), the atlas and metadata validator and its tests (`check-pose-pipeline.py`, `test-pose-validator.py`), the Aseprite import bridge (`import-pose-proxy.lua`) and the pipeline runner (`run-pose-pipeline.ps1`). The Blender render script is not included: it uses Blender's Python API, which would bring Blender's GPL into this repository, and the new renderer replaces it. The prototype's tests and runner refer to game assets that are not part of this repository, so they document the original pipeline rather than run here.
 
+## Quick start
+
+Build (below), then turn the generated test character into a validated atlas:
+
+```sh
+build/default/apps/pose-atlas make-test-rig out/test-rig.glb
+build/default/apps/pose-atlas render out/test-rig.glb --profile profiles/quarter-view-gltf.json --actions idle,run --out out/rig
+build/default/apps/pose-atlas validate out/rig
+```
+
+`render` samples `idle` and `run` (8 poses each by default), renders them in the eight views of the profile and writes `out/rig/atlas.png` (rows = views, columns = poses), `atlas.json` (Aseprite-style frames, tags and `foot` pivot slice), `atlas.aseprite` (one frame per pose and view, one tag per state, a `foot` slice and an empty "Manual corrections" layer) and `pose-contract.json` (profile, clocks, sources and hashes). It validates the result before it returns. Renders are cached in `out/rig/cache` by content hash, so running it again reports `0 rendered, 16 reused`, and changing one action (for example `--poses idle=8,run=6`) re-renders only that action. `validate` re-checks a directory at any time. Run `pose-atlas help` for all options.
+
 ## Build and test
 
 You need CMake 3.21 or newer, Ninja, GCC or Clang with C++17, and OpenGL through EGL with Mesa for the headless renderer (on Ubuntu: `libegl-dev libopengl-dev libegl-mesa0 libgl1-mesa-dri`). The renderer always uses Mesa's software device (llvmpipe), so no GPU or display is needed and output does not depend on the machine's GPU. All other dependencies are vendored under `third_party/` (see [NOTICE](NOTICE)).

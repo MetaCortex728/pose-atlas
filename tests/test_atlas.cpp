@@ -33,10 +33,10 @@ std::string rig_path() {
     return path;
 }
 
-AtlasJob rig_job(int poses = 8) {
+AtlasJob rig_job(int poses = 8, bool small = false) {
     AtlasJob job;
     job.model_path = rig_path();
-    job.profile = pose_atlas_test::gltf_profile();
+    job.profile = small ? pose_atlas_test::small_profile() : pose_atlas_test::gltf_profile();
     for (const char* action : {"idle", "run"}) {
         SamplingSpec spec;
         spec.action = action;
@@ -48,6 +48,11 @@ AtlasJob rig_job(int poses = 8) {
 
 const Atlas& rig_atlas() {
     static const Atlas atlas = render_atlas(pose_atlas_test::renderer(), rig_job());
+    return atlas;
+}
+
+const Atlas& small_rig_atlas() {
+    static const Atlas atlas = render_atlas(pose_atlas_test::renderer(), rig_job(8, true));
     return atlas;
 }
 
@@ -132,7 +137,7 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
 }
 
 TEST_CASE("atlas: the validator finds broken exports") {
-    const Atlas& atlas = rig_atlas();
+    const Atlas& atlas = small_rig_atlas();
     const std::string dir = fresh_dir("atlas_broken");
 
     SUBCASE("changed metadata") {
@@ -150,8 +155,8 @@ TEST_CASE("atlas: the validator finds broken exports") {
     }
     SUBCASE("clipped, blank and duplicate cells") {
         Atlas broken = atlas;
-        broken.cells[0].pixel(0, 100)[3] = 255;                 // idle0.e touches the edge
-        broken.cells[1] = Image(256, 256);                      // idle1.e blank
+        broken.cells[0].pixel(0, 40)[3] = 255;                  // idle0.e touches the edge
+        broken.cells[1] = Image(96, 96);                        // idle1.e blank
         broken.cells[16 + 2] = broken.cells[2];                 // idle2.ne repeats idle2.e
         for (int c = 9; c < 16; ++c) broken.cells[static_cast<std::size_t>(32 + c)] = broken.cells[32 + 8];  // run in n
         export_atlas(broken, dir);
@@ -166,7 +171,7 @@ TEST_CASE("atlas: the validator finds broken exports") {
     SUBCASE("changed .aseprite") {
         export_atlas(atlas, dir);
         AsepriteDocument doc = aseprite_document(atlas);
-        doc.frames[7].cels[0].image.pixel(128, 100)[0] ^= 1;
+        doc.frames[7].cels[0].image.pixel(48, 40)[0] ^= 1;
         doc.frames[2].cels.push_back({1, 0, 0, Image(2, 2)});
         doc.tags.pop_back();
         write_file(dir + "/atlas.aseprite", write_aseprite(doc));
@@ -179,7 +184,7 @@ TEST_CASE("atlas: the validator finds broken exports") {
     SUBCASE("contract inconsistent with its profile") {
         export_atlas(atlas, dir);
         json contract = read_json(dir + "/pose-contract.json");
-        contract["pivot"] = {120, 208};
+        contract["pivot"] = {40, 78};
         contract["cell_span_m"] = 2.0;
         contract["frames"][9]["projected_heading"] = {0.0, 1.0};
         write_text_file(dir + "/pose-contract.json", contract.dump());
@@ -204,7 +209,7 @@ TEST_CASE("atlas: the content-hash cache re-renders only what changed") {
         return n;
     };
 
-    AtlasJob job = rig_job(4);
+    AtlasJob job = rig_job(4, true);
     const Atlas first = render_atlas(renderer, job, cache);
     CHECK(reused(first, "idle") == 0);
     CHECK(reused(first, "run") == 0);
@@ -243,7 +248,7 @@ TEST_CASE("atlas: the content-hash cache re-renders only what changed") {
     CHECK(reused(render_atlas(renderer, job, cache), "idle") == 0);
 
     // A damaged entry is rendered again rather than trusted.
-    job = rig_job(4);
+    job = rig_job(4, true);
     write_file(cache + "/" + first.renders[0].key + ".png", {1, 2, 3});
     const Atlas repaired = render_atlas(renderer, job, cache);
     CHECK(reused(repaired, "idle") == 7);

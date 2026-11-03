@@ -3,12 +3,16 @@
 
 #include <cmath>
 #include <exception>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "pose_atlas/atlas.hpp"
 #include "pose_atlas/camera.hpp"
 #include "pose_atlas/model.hpp"
 #include "pose_atlas/profile.hpp"
@@ -36,6 +40,16 @@ constexpr const char* kUsage =
     "      --rate R                    runtime = source time / R (default 1)\n"
     "      --frame-ms MS               fixed runtime duration per pose\n"
     "      --cycle-m M [--speed-mps V] distance-driven cycle, optional reference speed\n"
+    "  render <model.glb> --profile <profile.json> --actions A,B --out <dir> [options]\n"
+    "                                  render every action in eight views and export\n"
+    "                                  atlas.png, atlas.json, atlas.aseprite and\n"
+    "                                  pose-contract.json, then validate them:\n"
+    "      --poses N | A=N,B=M         poses per action (default 8)\n"
+    "      --rate R | --frame-ms MS    runtime cadence (default: source rate 1)\n"
+    "      --outline                   one-pixel outline, hard edges\n"
+    "      --hide-material NAME        do not draw this material (repeatable)\n"
+    "      --cache DIR | --no-cache    render cache (default <out>/cache)\n"
+    "  validate <dir> [--report FILE]  check an exported directory against its contract\n"
     "  version                         print the version\n"
     "  help                            print this help\n";
 
@@ -205,6 +219,151 @@ int plan_command(const Args& args) {
     return 0;
 }
 
+std::vector<std::string> split(const std::string& text, char separator) {
+    std::vector<std::string> out;
+    std::string item;
+    for (char c : text) {
+        if (c == separator) {
+            out.push_back(item);
+            item.clear();
+        } else {
+            item += c;
+        }
+    }
+    out.push_back(item);
+    return out;
+}
+
+int parse_count(const std::string& option, const std::string& text) {
+    const double n = parse_number(option, text);
+    if (n != std::floor(n) || n < 1 || n > 4096) throw UsageError(option + ": expected a pose count from 1 to 4096");
+    return static_cast<int>(n);
+}
+
+int render_command(const Args& args) {
+    if (args.size() < 2) throw UsageError("render: expected 'render <model.glb> --profile FILE --actions A,B --out DIR'");
+    pose_atlas::AtlasJob job;
+    job.model_path = args[1];
+    std::string profile_path, actions, out, cache, poses = "8";
+    bool no_cache = false, have_rate = false, have_frame = false;
+    pose_atlas::Cadence cadence;
+    for (std::size_t i = 2; i < args.size(); ++i) {
+        const std::string& option = args[i];
+        if (option == "--outline") {
+            job.settings.style.outline = true;
+            continue;
+        }
+        if (option == "--no-cache") {
+            no_cache = true;
+            continue;
+        }
+        if (i + 1 >= args.size()) throw UsageError(option + ": missing value");
+        const std::string& value = args[++i];
+        if (option == "--profile") {
+            profile_path = value;
+        } else if (option == "--actions") {
+            actions = value;
+        } else if (option == "--out") {
+            out = value;
+        } else if (option == "--poses") {
+            poses = value;
+        } else if (option == "--rate") {
+            cadence.playback_rate = parse_number(option, value);
+            have_rate = true;
+        } else if (option == "--frame-ms") {
+            cadence.kind = pose_atlas::Cadence::Kind::FixedFrame;
+            cadence.frame_ms = parse_number(option, value);
+            have_frame = true;
+        } else if (option == "--hide-material") {
+            job.settings.hidden_materials.push_back(value);
+        } else if (option == "--cache") {
+            cache = value;
+        } else {
+            throw UsageError("render: unknown option '" + option + "'");
+        }
+    }
+    if (profile_path.empty() || actions.empty() || out.empty()) {
+        throw UsageError("render: --profile, --actions and --out are required");
+    }
+    if (have_rate && have_frame) throw UsageError("render: choose one cadence: --rate or --frame-ms");
+    if (no_cache && !cache.empty()) throw UsageError("render: --cache and --no-cache exclude each other");
+
+    // Pose counts: one number for every action, or action=count pairs.
+    std::map<std::string, int> counts;
+    int default_count = 8;
+    if (poses.find('=') == std::string::npos) {
+        default_count = parse_count("--poses", poses);
+    } else {
+        for (const std::string& pair : split(poses, ',')) {
+            const auto eq = pair.find('=');
+            if (eq == std::string::npos) throw UsageError("--poses: expected N or ACTION=N,...");
+            counts[pair.substr(0, eq)] = parse_count("--poses", pair.substr(eq + 1));
+        }
+    }
+    for (const std::string& name : split(actions, ',')) {
+        if (name.empty()) throw UsageError("--actions: empty action name");
+        pose_atlas::SamplingSpec spec;
+        spec.action = name;
+        const auto it = counts.find(name);
+        spec.pose_count = it != counts.end() ? it->second : default_count;
+        if (it != counts.end()) counts.erase(it);
+        spec.cadence = cadence;
+        job.actions.push_back(spec);
+    }
+    if (!counts.empty()) throw UsageError("--poses: '" + counts.begin()->first + "' is not in --actions");
+
+    job.profile = pose_atlas::load_profile(profile_path);
+    std::filesystem::create_directories(out);
+    if (!no_cache && cache.empty()) cache = (std::filesystem::path(out) / "cache").string();
+
+    pose_atlas::Renderer renderer;
+    const pose_atlas::Atlas atlas = pose_atlas::render_atlas(renderer, job, no_cache ? "" : cache);
+    int reused = 0;
+    std::string line;
+    for (const auto& r : atlas.renders) {
+        reused += r.reused ? 1 : 0;
+        if (line.empty() || line.rfind(r.action + ":", 0) != 0) {
+            if (!line.empty()) std::cout << line << "\n";
+            line = r.action + ":";
+        }
+        line += " " + r.view + (r.reused ? "=reused" : "=rendered");
+    }
+    std::cout << line << "\n";
+    std::cout << "renders: " << atlas.renders.size() - static_cast<std::size_t>(reused) << " rendered, " << reused
+              << " reused from " << (no_cache ? std::string("(no cache)") : cache) << "\n";
+    for (const std::string& file : pose_atlas::export_atlas(atlas, out)) {
+        std::cout << "wrote " << (std::filesystem::path(out) / file).string() << "\n";
+    }
+    const pose_atlas::ValidationReport report = pose_atlas::validate_atlas(out);
+    for (const auto& problem : report.problems) std::cerr << "validate: " << problem << "\n";
+    if (!report.passed()) {
+        std::cerr << "pose-atlas: the export did not pass validation\n";
+        return 1;
+    }
+    std::cout << "validated " << report.frames.size() << " frames (" << atlas.columns << " poses x 8 views) in "
+              << out << "\n";
+    return 0;
+}
+
+int validate_command(const Args& args) {
+    if (args.size() != 2 && !(args.size() == 4 && args[2] == "--report")) {
+        throw UsageError("validate: expected 'validate <dir> [--report FILE]'");
+    }
+    const pose_atlas::ValidationReport report = pose_atlas::validate_atlas(args[1]);
+    if (args.size() == 4) {
+        std::ofstream file(args[3], std::ios::binary | std::ios::trunc);
+        file << report.to_json();
+        if (!file) throw std::runtime_error(args[3] + ": cannot write the report");
+    }
+    for (const auto& problem : report.problems) std::cout << args[1] << ": " << problem << "\n";
+    if (!report.passed()) {
+        std::cout << "POSE_VALIDATION_FAIL " << report.problems.size() << " problems\n";
+        return 1;
+    }
+    std::cout << "POSE_VALIDATION_PASS " << report.frames.size() << " frames in " << args[1] << "\n";
+    return 0;
+}
+
 int run(const Args& args) {
     if (args.empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
         std::cout << kUsage;
@@ -218,8 +377,12 @@ int run(const Args& args) {
     if (command == "profile") return profile_command(args);
     if (command == "inspect") return inspect_command(args);
     if (command == "plan") return plan_command(args);
+    if (command == "render") return render_command(args);
+    if (command == "validate") return validate_command(args);
     if (command == "make-test-rig") {
         if (args.size() != 2) throw UsageError("make-test-rig: expected 'make-test-rig <out.glb>'");
+        const std::filesystem::path parent = std::filesystem::path(args[1]).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
         pose_atlas::test_rig::write_glb(args[1]);
         std::cout << "wrote " << args[1] << "\n";
         return 0;
