@@ -52,6 +52,7 @@ find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
 
 # Core library.
 add_library(pose_atlas STATIC
+    src/aseprite.cpp
     src/atlas.cpp
     src/camera.cpp
     src/gltf_loader.cpp

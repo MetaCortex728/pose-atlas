@@ -22,9 +22,16 @@
 //
 // Added: format and version of the contract, file hashes, consistency of the
 // contract with its embedded profile.
+//
+// The .aseprite file takes the place of the prototype's raw frame files and
+// its Aseprite import script: every frame's base-layer cel must hold exactly
+// the atlas cell's RGBA ("Import/export changed raw RGBA pixels"), the
+// corrections layer must be empty, durations must match, there must be one
+// tag per state over that state's frames, and a "foot" slice with the pivot.
 #include <cmath>
 #include <map>
 #include <set>
+#include <tuple>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -97,7 +104,9 @@ private:
         const json& files = contract.at("files");
         check_hash(files, "atlas", atlas_bytes, kAtlasPng);
         check_hash(files, "metadata", metadata_bytes, kAtlasJson);
-        check_extra(contract);
+        const auto aseprite_bytes = read_file(join_path(dir_, kAtlasAseprite));
+        check_hash(files, "aseprite", aseprite_bytes, kAtlasAseprite);
+        aseprite_ = read_aseprite(aseprite_bytes, kAtlasAseprite);
 
         const json metadata = json::parse(metadata_bytes.begin(), metadata_bytes.end());
         const json& frames = metadata.at("frames");
@@ -176,6 +185,7 @@ private:
             return;
         }
         if (frames.size() != total || items.size() != total) return;
+        check_aseprite(contract, profile, columns, views);
         std::vector<std::string> cell_hashes;
         for (std::size_t index = 0; index < total; ++index) {
             const json& frame = frames[index];
@@ -211,7 +221,7 @@ private:
                    where + "projected_heading does not follow from the profile");
 
             const Image cell = crop(atlas, x, y, size, size);
-            check_cell(index, cell);
+            check_aseprite_cell(index, cell, where);
             const Bounds b = alpha_bounds(cell);
             if (b.empty()) {
                 problem(where + "blank pose");
@@ -244,11 +254,64 @@ private:
         }
     }
 
-    // Hooks for checks of further outputs.
-    void check_extra(const json&) {}
-    void check_cell(std::size_t, const Image&) {}
+    void check_aseprite(const json& contract, const Profile& profile, int columns, int views) {
+        const AsepriteDocument& doc = aseprite_;
+        const int size = profile.cell_pixels;
+        const std::size_t total = static_cast<std::size_t>(columns) * static_cast<std::size_t>(views);
+        aseprite_ok_ = doc.width == size && doc.height == size && doc.frames.size() == total;
+        expect(doc.width == size && doc.height == size, "atlas.aseprite: sprite size is not the cell");
+        expect(doc.frames.size() == total, "atlas.aseprite: expected one frame per pose and view");
+        expect(doc.layers == std::vector<std::string>{kAsepriteBaseLayer, kAsepriteCorrectionsLayer},
+               std::string("atlas.aseprite: layers must be \"") + kAsepriteBaseLayer + "\" and \"" +
+                   kAsepriteCorrectionsLayer + "\"");
+        const json& items = contract.at("frames");
+        for (std::size_t i = 0; i < doc.frames.size() && i < items.size(); ++i) {
+            expect(doc.frames[i].duration_ms == items[i].at("duration_ms").get<int>(),
+                   "atlas.aseprite: frame " + std::to_string(i) + " duration differs from the contract");
+            for (const AsepriteCel& cel : doc.frames[i].cels) {
+                expect(cel.layer == 0, "atlas.aseprite: frame " + std::to_string(i) +
+                                           " has a cel on the corrections layer (not empty)");
+            }
+        }
+        // One tag per state: action.view over its poses in that view.
+        std::vector<std::tuple<std::string, int, int>> expected, found;
+        for (int row = 0; row < views; ++row) {
+            for (const json& action : contract.at("actions")) {
+                const int from = row * columns + action.at("first_column").get<int>();
+                expected.emplace_back(action.at("name").get<std::string>() + "." +
+                                          kScreenHeadings[static_cast<std::size_t>(row)],
+                                      from, from + action.at("pose_count").get<int>() - 1);
+            }
+        }
+        for (const AsepriteTag& tag : doc.tags) found.emplace_back(tag.name, tag.from, tag.to);
+        expect(found == expected, "atlas.aseprite: tags are not one per state over that state's frames");
+        expect(doc.slices.size() == 1 && doc.slices[0].name == "foot" && doc.slices[0].keys.size() == 1 &&
+                   doc.slices[0].keys[0].frame == 0 && doc.slices[0].keys[0].x == 0 && doc.slices[0].keys[0].y == 0 &&
+                   doc.slices[0].keys[0].width == size && doc.slices[0].keys[0].height == size &&
+                   doc.slices[0].keys[0].pivot ==
+                       std::array<int, 2>{profile.ground_pivot_pixels[0], profile.ground_pivot_pixels[1]},
+               "atlas.aseprite: expected one foot slice over the cell with the profile's pivot");
+    }
+
+    void check_aseprite_cell(std::size_t index, const Image& cell, const std::string& where) {
+        if (!aseprite_ok_) return;
+        // Compose the base layer's cels into a cell-sized image.
+        Image base(cell.width, cell.height);
+        for (const AsepriteCel& cel : aseprite_.frames[index].cels) {
+            if (cel.layer != 0) continue;
+            if (cel.x < 0 || cel.y < 0 || cel.x + cel.image.width > cell.width ||
+                cel.y + cel.image.height > cell.height) {
+                problem(where + "atlas.aseprite cel lies outside the cell");
+                return;
+            }
+            blit(base, cel.image, cel.x, cel.y);
+        }
+        expect(base == cell, where + "Import/export changed raw RGBA pixels (atlas.aseprite differs from atlas.png)");
+    }
 
     std::string dir_;
+    AsepriteDocument aseprite_;
+    bool aseprite_ok_ = false;
     ValidationReport report_;
 };
 

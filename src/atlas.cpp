@@ -198,11 +198,42 @@ std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_fil
     return root.dump(1) + "\n";
 }
 
+AsepriteDocument aseprite_document(const Atlas& atlas) {
+    const int cell = atlas.profile.cell_pixels;
+    AsepriteDocument doc;
+    doc.width = cell;
+    doc.height = cell;
+    doc.layers = {kAsepriteBaseLayer, kAsepriteCorrectionsLayer};
+    for (const FrameInfo& f : frame_infos(atlas)) {
+        AsepriteFrame frame;
+        frame.duration_ms = atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)];
+        frame.cels.push_back({0, 0, 0, atlas.cell(f.view, f.column)});
+        doc.frames.push_back(std::move(frame));
+    }
+    for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
+        int first = 0;
+        for (const SamplingPlan& plan : atlas.plans) {
+            const int from = view * atlas.columns + first;
+            doc.tags.push_back({plan.action + "." + kScreenHeadings[static_cast<std::size_t>(view)], from,
+                                from + plan.pose_count - 1});
+            first += plan.pose_count;
+        }
+    }
+    AsepriteSliceKey key;
+    key.width = cell;
+    key.height = cell;
+    key.pivot = std::array<int, 2>{atlas.profile.ground_pivot_pixels[0], atlas.profile.ground_pivot_pixels[1]};
+    doc.slices.push_back({"foot", {key}});
+    return doc;
+}
+
 std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& directory) {
     const auto png = encode_png(atlas_image(atlas));
     const std::string metadata = atlas_metadata_json(atlas, kAtlasPng);
     write_file(join_path(directory, kAtlasPng), png);
     write_text_file(join_path(directory, kAtlasJson), metadata);
+    const auto aseprite = write_aseprite(aseprite_document(atlas));
+    write_file(join_path(directory, kAtlasAseprite), aseprite);
 
     const Profile& p = atlas.profile;
     ordered_json c;
@@ -277,9 +308,10 @@ std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& dir
     }
     c["frames"] = frames;
     c["files"] = {{"atlas", {{"file", kAtlasPng}, {"sha256", sha256_hex(png)}}},
-                  {"metadata", {{"file", kAtlasJson}, {"sha256", sha256_hex(metadata)}}}};
+                  {"metadata", {{"file", kAtlasJson}, {"sha256", sha256_hex(metadata)}}},
+                  {"aseprite", {{"file", kAtlasAseprite}, {"sha256", sha256_hex(aseprite)}}}};
     write_text_file(join_path(directory, kContractJson), c.dump(2) + "\n");
-    return {kAtlasPng, kAtlasJson, kContractJson};
+    return {kAtlasPng, kAtlasJson, kAtlasAseprite, kContractJson};
 }
 
 }  // namespace pose_atlas

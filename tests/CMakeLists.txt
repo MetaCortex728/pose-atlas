@@ -1,5 +1,6 @@
 add_executable(pose_atlas_tests
     main.cpp
+    test_aseprite.cpp
     test_atlas.cpp
     test_camera.cpp
     test_geometry.cpp

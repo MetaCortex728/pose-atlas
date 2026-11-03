@@ -2,12 +2,13 @@
 // From a model and a profile to an atlas: sampling each action, rendering
 // every (action, view), laying the cells out (rows = views in heading order,
 // columns = the poses of all actions in order), and exporting the atlas PNG,
-// its Aseprite-style JSON and the pose contract.
+// its Aseprite-style JSON, an editable .aseprite file and the pose contract.
 #pragma once
 
 #include <string>
 #include <vector>
 
+#include "pose_atlas/aseprite.hpp"
 #include "pose_atlas/image.hpp"
 #include "pose_atlas/model.hpp"
 #include "pose_atlas/profile.hpp"
@@ -19,6 +20,9 @@ namespace pose_atlas {
 /// Output file names inside the output directory.
 inline constexpr const char* kAtlasPng = "atlas.png";
 inline constexpr const char* kAtlasJson = "atlas.json";
+inline constexpr const char* kAtlasAseprite = "atlas.aseprite";
+inline constexpr const char* kAsepriteBaseLayer = "Render";
+inline constexpr const char* kAsepriteCorrectionsLayer = "Manual corrections";
 inline constexpr const char* kContractJson = "pose-contract.json";
 inline constexpr const char* kContractFormat = "pose-atlas-contract";
 inline constexpr int kContractVersion = 1;
@@ -79,8 +83,15 @@ Image atlas_image(const Atlas& atlas);
 /// Aseprite-style JSON (json-array format) for an atlas image file name.
 std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_file);
 
-/// Write atlas.png, atlas.json and pose-contract.json into `directory`
-/// (which must exist). Returns the files written.
+/// The atlas as an Aseprite document: one frame per cell in atlas order (view
+/// by view, the poses of each view in column order) with its duration, a
+/// base layer "Render" holding the cell, an empty layer "Manual corrections"
+/// above it, one tag per state ("<action>.<view>" over that action's poses in
+/// that view) and a "foot" slice over the cell with the pivot.
+AsepriteDocument aseprite_document(const Atlas& atlas);
+
+/// Write atlas.png, atlas.json, atlas.aseprite and pose-contract.json into
+/// `directory` (which must exist). Returns the files written.
 std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& directory);
 
 /// Validation of an exported directory: the rules of the prototype's

@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "aseprite_parser.hpp"
 #include "pose_atlas/atlas.hpp"
 #include "pose_atlas/test_rig.hpp"
 #include "render_support.hpp"
@@ -108,10 +109,25 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(contract["frames"][8]["source_time_s"] == doctest::Approx(0.0));
     CHECK(contract["frames"][9]["source_time_s"] == doctest::Approx(0.1));
 
+    // The .aseprite file, read with the tests' own parser: one frame per
+    // pose and view with its duration, two layers, one tag per state.
+    const auto raw = pose_atlas_test::parse_raw_aseprite(read_file(dir + "/atlas.aseprite"));
+    CHECK(raw.width == 256);
+    CHECK(raw.frames == 128);
+    CHECK(raw.frame_list[0].duration == 250);
+    CHECK(raw.frame_list[8].duration == 100);
+    const AsepriteDocument doc = read_aseprite(read_file(dir + "/atlas.aseprite"));
+    REQUIRE(doc.tags.size() == 16);
+    CHECK(doc.tags[3].name == "run.ne");
+    CHECK(doc.tags[3].from == 24);
+    CHECK(doc.tags[3].to == 31);
+    CHECK(doc.frames[24].cels[0].image == atlas.cell(1, 8));
+
     // Exporting again gives the same bytes.
     const std::string again = fresh_dir("atlas_export_again");
     export_atlas(atlas, again);
     CHECK(read_file(again + "/atlas.png") == read_file(dir + "/atlas.png"));
+    CHECK(read_file(again + "/atlas.aseprite") == read_file(dir + "/atlas.aseprite"));
     CHECK(read_file(again + "/pose-contract.json") == read_file(dir + "/pose-contract.json"));
 }
 
@@ -146,6 +162,19 @@ TEST_CASE("atlas: the validator finds broken exports") {
         CHECK(has_problem(report, "Poses did not change: action run shows one image in view n"));
         CHECK_FALSE(has_problem(report, "action idle shows one image"));
         CHECK_FALSE(has_problem(report, "SHA-256"));
+    }
+    SUBCASE("changed .aseprite") {
+        export_atlas(atlas, dir);
+        AsepriteDocument doc = aseprite_document(atlas);
+        doc.frames[7].cels[0].image.pixel(128, 100)[0] ^= 1;
+        doc.frames[2].cels.push_back({1, 0, 0, Image(2, 2)});
+        doc.tags.pop_back();
+        write_file(dir + "/atlas.aseprite", write_aseprite(doc));
+        const auto report = validate_atlas(dir);
+        CHECK(has_problem(report, "atlas.aseprite: SHA-256 differs"));
+        CHECK(has_problem(report, "frame 7 (idle7.e): Import/export changed raw RGBA pixels"));
+        CHECK(has_problem(report, "frame 2 has a cel on the corrections layer"));
+        CHECK(has_problem(report, "tags are not one per state"));
     }
     SUBCASE("contract inconsistent with its profile") {
         export_atlas(atlas, dir);
