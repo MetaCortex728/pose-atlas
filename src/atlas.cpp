@@ -255,6 +255,23 @@ std::vector<FrameInfo> frame_infos(const Atlas& atlas) {
     return out;
 }
 
+// One tag per state, "<action>.<view>" over that action's poses in that view,
+// view by view and in action order: the same list in atlas.json and
+// atlas.aseprite.
+std::vector<AsepriteTag> state_tags(const Atlas& atlas) {
+    std::vector<AsepriteTag> tags;
+    for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
+        int first = 0;
+        for (const SamplingPlan& plan : atlas.plans) {
+            const int from = view * atlas.columns + first;
+            tags.push_back({plan.action + "." + kScreenHeadings[static_cast<std::size_t>(view)], from,
+                            from + plan.pose_count - 1});
+            first += plan.pose_count;
+        }
+    }
+    return tags;
+}
+
 }  // namespace
 
 std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_file) {
@@ -262,8 +279,7 @@ std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_fil
     ordered_json frames = ordered_json::array();
     ordered_json tags = ordered_json::array();
     const auto infos = frame_infos(atlas);
-    for (std::size_t i = 0; i < infos.size(); ++i) {
-        const FrameInfo& f = infos[i];
+    for (const FrameInfo& f : infos) {
         frames.push_back({{"filename", f.name},
                           {"frame", rect(f.column * cell, f.view * cell, cell, cell)},
                           {"rotated", false},
@@ -271,7 +287,10 @@ std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_fil
                           {"spriteSourceSize", rect(0, 0, cell, cell)},
                           {"sourceSize", {{"w", cell}, {"h", cell}}},
                           {"duration", atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)]}});
-        tags.push_back({{"name", f.name}, {"from", i}, {"to", i}, {"direction", "forward"}, {"color", "#000000ff"}});
+    }
+    for (const AsepriteTag& tag : state_tags(atlas)) {
+        tags.push_back({{"name", tag.name}, {"from", tag.from}, {"to", tag.to}, {"direction", "forward"},
+                        {"color", "#000000ff"}});
     }
     ordered_json meta;
     meta["app"] = "pose-atlas";
@@ -309,15 +328,7 @@ AsepriteDocument aseprite_document(const Atlas& atlas) {
         frame.cels.push_back({0, 0, 0, atlas.cell(f.view, f.column)});
         doc.frames.push_back(std::move(frame));
     }
-    for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
-        int first = 0;
-        for (const SamplingPlan& plan : atlas.plans) {
-            const int from = view * atlas.columns + first;
-            doc.tags.push_back({plan.action + "." + kScreenHeadings[static_cast<std::size_t>(view)], from,
-                                from + plan.pose_count - 1});
-            first += plan.pose_count;
-        }
-    }
+    doc.tags = state_tags(atlas);
     AsepriteSliceKey key;
     key.width = cell;
     key.height = cell;

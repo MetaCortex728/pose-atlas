@@ -2,8 +2,7 @@
 // Port of the prototype's check-pose-pipeline.py to this pipeline's outputs.
 //
 // Kept: frame count and layout (rows = views, columns = poses), cell size
-// and pivot, physical framing (cell span = cell x metres per pixel), one
-// frame tag per pose and view with from = to = its own frame, exactly one
+// and pivot, physical framing (cell span = cell x metres per pixel), exactly one
 // "foot" slice with the pivot and full-cell bounds, frame rectangles,
 // untrimmed and unrotated frames with full source size, durations matching
 // the contract, frame names "<pose>.<view>", projected headings matching
@@ -20,6 +19,12 @@
 // 64/96 px cells and 208 cm span, and the requirement of binary alpha (the
 // renderer's filtered edges have partial alpha by design).
 //
+// Changed: the prototype had one frame tag per pose and view (from = to =
+// its own frame). Engine importers expect one tag per state, as Aseprite's
+// own JSON export writes it, so atlas.json and atlas.aseprite both need one
+// tag per state, "<action>.<view>" over that state's frames, in the same
+// order.
+//
 // Added: format and version of the contract, file hashes, consistency of the
 // contract with its embedded profile, and, when the contract names a palette,
 // the palette lock: every opaque pixel in the palette (plus the outline
@@ -31,7 +36,6 @@
 // corrections layer must be empty, durations must match, there must be one
 // tag per state over that state's frames, and a "foot" slice with the pivot.
 #include <cmath>
-#include <map>
 #include <set>
 #include <tuple>
 #include <sstream>
@@ -160,11 +164,16 @@ private:
         expect(meta.at("size") == json({{"w", size * columns}, {"h", size * views}}), "meta.size is not the atlas size");
         expect(meta.at("image") == kAtlasPng, std::string("meta.image is not ") + kAtlasPng);
 
-        // Tags: one per pose and view, each on its own frame only.
-        const json& tag_list = meta.at("frameTags");
-        expect(tag_list.size() == total, "Expected one frame tag per pose and view");
-        std::map<std::string, std::pair<int, int>> tags;
-        for (const json& tag : tag_list) tags[tag.at("name")] = {tag.at("from").get<int>(), tag.at("to").get<int>()};
+        // Tags: one per state, the same in atlas.json and atlas.aseprite.
+        expected_tags_ = state_tags(contract, columns, views);
+        std::vector<std::tuple<std::string, int, int>> json_tags;
+        for (const json& tag : meta.at("frameTags")) {
+            json_tags.emplace_back(tag.at("name").get<std::string>(), tag.at("from").get<int>(),
+                                   tag.at("to").get<int>());
+        }
+        expect(json_tags == expected_tags_, "atlas.json: frameTags are not one per state (" +
+                                                std::to_string(expected_tags_.size()) +
+                                                " tags, <action>.<view> over that state's frames, view by view)");
 
         // The foot slice.
         const json& slices = meta.at("slices");
@@ -210,9 +219,6 @@ private:
             const int duration = frame.at("duration").get<int>();
             expect(duration == item.at("duration_ms").get<int>(), where + "duration differs from the contract");
             expect(duration >= 1, where + "duration must be at least 1 ms");
-            const auto tag = tags.find(expected_name);
-            expect(tag != tags.end() && tag->second == std::make_pair(static_cast<int>(index), static_cast<int>(index)),
-                   where + "Tag was extended when later frames were added, or is missing");
             const double angle = row * kPi / 4;
             const auto heading = item.at("projected_heading").get<std::vector<double>>();
             expect(heading.size() == 2 &&
@@ -317,6 +323,21 @@ private:
         }
     }
 
+    // "<action>.<view>" over that action's poses in that view, view by view,
+    // actions in column order.
+    static std::vector<std::tuple<std::string, int, int>> state_tags(const json& contract, int columns, int views) {
+        std::vector<std::tuple<std::string, int, int>> out;
+        for (int row = 0; row < views && row < static_cast<int>(kScreenHeadings.size()); ++row) {
+            for (const json& action : contract.at("actions")) {
+                const int from = row * columns + action.at("first_column").get<int>();
+                out.emplace_back(action.at("name").get<std::string>() + "." +
+                                     kScreenHeadings[static_cast<std::size_t>(row)],
+                                 from, from + action.at("pose_count").get<int>() - 1);
+            }
+        }
+        return out;
+    }
+
     void check_aseprite(const json& contract, const Profile& profile, int columns, int views) {
         const AsepriteDocument& doc = aseprite_;
         const int size = profile.cell_pixels;
@@ -337,17 +358,9 @@ private:
             }
         }
         // One tag per state: action.view over its poses in that view.
-        std::vector<std::tuple<std::string, int, int>> expected, found;
-        for (int row = 0; row < views; ++row) {
-            for (const json& action : contract.at("actions")) {
-                const int from = row * columns + action.at("first_column").get<int>();
-                expected.emplace_back(action.at("name").get<std::string>() + "." +
-                                          kScreenHeadings[static_cast<std::size_t>(row)],
-                                      from, from + action.at("pose_count").get<int>() - 1);
-            }
-        }
+        std::vector<std::tuple<std::string, int, int>> found;
         for (const AsepriteTag& tag : doc.tags) found.emplace_back(tag.name, tag.from, tag.to);
-        expect(found == expected, "atlas.aseprite: tags are not one per state over that state's frames");
+        expect(found == expected_tags_, "atlas.aseprite: tags are not one per state over that state's frames");
         expect(doc.slices.size() == 1 && doc.slices[0].name == "foot" && doc.slices[0].keys.size() == 1 &&
                    doc.slices[0].keys[0].frame == 0 && doc.slices[0].keys[0].x == 0 && doc.slices[0].keys[0].y == 0 &&
                    doc.slices[0].keys[0].width == size && doc.slices[0].keys[0].height == size &&
@@ -373,6 +386,7 @@ private:
     }
 
     std::string dir_;
+    std::vector<std::tuple<std::string, int, int>> expected_tags_;
     AsepriteDocument aseprite_;
     bool aseprite_ok_ = false;
     ValidationReport report_;

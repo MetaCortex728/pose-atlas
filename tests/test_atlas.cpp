@@ -108,7 +108,15 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(metadata["frames"][17]["filename"] == "idle1.ne");
     CHECK(metadata["frames"][17]["frame"] == json({{"x", 256}, {"y", 256}, {"w", 256}, {"h", 256}}));
     CHECK(metadata["frames"][17]["duration"] == 250);
-    CHECK(metadata["meta"]["frameTags"].size() == 128);
+    // One tag per state (2 actions x 8 views), the same as in the .aseprite.
+    const json& tags = metadata["meta"]["frameTags"];
+    REQUIRE(tags.size() == 16);
+    CHECK(tags[0] == json({{"name", "idle.e"}, {"from", 0}, {"to", 7}, {"direction", "forward"}, {"color", "#000000ff"}}));
+    CHECK(tags[3]["name"] == "run.ne");
+    CHECK(tags[3]["from"] == 24);
+    CHECK(tags[3]["to"] == 31);
+    CHECK(tags[15]["name"] == "run.se");
+    CHECK(tags[15]["to"] == 127);
     CHECK(metadata["meta"]["slices"][0]["keys"][0]["pivot"] == json({{"x", 128}, {"y", 208}}));
     const json contract = read_json(dir + "/pose-contract.json");
     CHECK(contract["sources"]["model"]["sha256"] == sha256_hex(read_file(rig_path())));
@@ -132,6 +140,11 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(doc.tags[3].from == 24);
     CHECK(doc.tags[3].to == 31);
     CHECK(doc.frames[24].cels[0].image == atlas.cell(1, 8));
+    for (std::size_t i = 0; i < doc.tags.size(); ++i) {
+        CHECK(tags[i]["name"] == doc.tags[i].name);
+        CHECK(tags[i]["from"] == doc.tags[i].from);
+        CHECK(tags[i]["to"] == doc.tags[i].to);
+    }
 
     // Exporting again gives the same bytes.
     const std::string again = fresh_dir("atlas_export_again");
@@ -155,7 +168,7 @@ TEST_CASE("atlas: the validator finds broken exports") {
         const auto report = validate_atlas(dir);
         CHECK(has_problem(report, "atlas.json: SHA-256 differs"));
         CHECK(has_problem(report, "frame 3 (idle3.e): duration differs from the contract"));
-        CHECK(has_problem(report, "frame 5 (idle5.e): Tag was extended"));
+        CHECK(has_problem(report, "atlas.json: frameTags are not one per state (16 tags"));
         CHECK(has_problem(report, "foot slice: expected one key on frame 0 with the profile's pivot"));
     }
     SUBCASE("clipped, blank and duplicate cells") {
