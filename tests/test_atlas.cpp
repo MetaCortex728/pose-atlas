@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <doctest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <string>
 
@@ -8,6 +10,7 @@
 
 #include "aseprite_parser.hpp"
 #include "pose_atlas/atlas.hpp"
+#include "pose_atlas/camera.hpp"
 #include "pose_atlas/test_rig.hpp"
 #include "render_support.hpp"
 
@@ -111,6 +114,7 @@ TEST_CASE("atlas: the rig's two actions in eight views export and validate") {
     CHECK(contract["sources"]["model"]["sha256"] == sha256_hex(read_file(rig_path())));
     CHECK(contract["sources"]["profile"]["id"] == "quarter-view-30-gltf");
     CHECK_FALSE(contract["sources"].contains("palette"));
+    CHECK_FALSE(contract.contains("palette_report"));
     CHECK(contract["actions"][1]["clocks"]["runtime"]["frame_cycle_ms"] == 800);
     CHECK(contract["frames"][8]["source_time_s"] == doctest::Approx(0.0));
     CHECK(contract["frames"][9]["source_time_s"] == doctest::Approx(0.1));
@@ -270,4 +274,134 @@ TEST_CASE("atlas: the content-hash cache re-renders only what changed") {
     const Atlas repaired = render_atlas(renderer, job, cache);
     CHECK(reused(repaired, "idle") == 7);
     CHECK(repaired.cells == first.cells);
+}
+
+TEST_CASE("atlas: palette report, before versus before_after") {
+    // The open question: is snapping the supersampled render to the palette
+    // (before) enough, or is a final snap after the Mitchell downsample also
+    // needed (before_after)? Rendered with the rig's own colours.
+    auto& renderer = pose_atlas_test::renderer();
+    AtlasJob job = rig_job(4, true);
+    job.settings.palette = test_rig::palette();
+    job.palette_path = "palettes/test-rig.json";
+    PaletteMatcher matcher(job.settings.palette);
+
+    job.settings.palette_stage = PaletteStage::Before;
+    const std::string cache = fresh_dir("atlas_palette_cache");
+    const Atlas before = render_atlas(renderer, job, cache);
+    job.settings.palette_stage = PaletteStage::BeforeAfter;
+    const Atlas both = render_atlas(renderer, job);
+
+    const PaletteStats b = before.palette_total(), ba = both.palette_total();
+    MESSAGE("before:       " << palette_summary(before));
+    MESSAGE("before_after: " << palette_summary(both));
+    CHECK(b.opaque > 10000);
+    // Before alone leaves off-palette pixels (the downsample blends regions);
+    // with no final snap they reach the output.
+    CHECK(b.off_palette_before_snap > 0);
+    CHECK(b.off_palette_output == b.off_palette_before_snap);
+    // The same pipeline up to the final snap, then none are left.
+    CHECK(ba.off_palette_before_snap == b.off_palette_before_snap);
+    CHECK(ba.partial_alpha == b.partial_alpha);
+    CHECK(ba.off_palette_output == 0);
+    CHECK(b.partial_alpha > 0);
+
+    // Every off-palette pixel of `before` is a Mitchell blend at a region
+    // border: the filter's footprint in the snapped supersampled render
+    // (output pixel centre +- 2 px) holds more than one colour or coverage.
+    // Pixels whose footprint is uniform are on the palette. Checked on the
+    // first idle pose in all eight views.
+    {
+        const Profile& profile = job.profile;
+        const int ss = profile.supersampling;
+        const Model& model = pose_atlas_test::rig();
+        const Pose pose = evaluate(model, &model.animation("idle"), 0.0);
+        RenderSettings settings = job.settings;
+        settings.palette_stage = PaletteStage::Before;
+        int off = 0, off_uniform = 0, uniform_opaque = 0;
+        for (int view = 0; view < 8; ++view) {
+            const CameraGuide guide = camera_guide(profile, view);
+            LinearImage snapped = renderer.render_linear(model, pose, profile, guide, settings);
+            snap_linear(snapped, matcher);
+            const Image cell = renderer.render(model, pose, profile, guide, settings);
+            CHECK(cell == before.cell(view, 0));
+            auto at = [&](int sx, int sy) {
+                return snapped.rgba.data() +
+                       (static_cast<std::size_t>(sy) * static_cast<std::size_t>(snapped.width) + static_cast<std::size_t>(sx)) * 4;
+            };
+            auto footprint = [&](int centre) {
+                std::vector<int> taps;
+                for (int k = (centre - 2) * ss; k < (centre + 3) * ss; ++k) {
+                    if (std::fabs((k + 0.5) / ss - (centre + 0.5)) < 2.0 && k >= 0 && k < snapped.width) taps.push_back(k);
+                }
+                return taps;
+            };
+            for (int y = 0; y < cell.height; ++y) {
+                const auto ys = footprint(y);
+                for (int x = 0; x < cell.width; ++x) {
+                    const std::uint8_t* p = cell.pixel(x, y);
+                    if (p[3] == 0) continue;
+                    const auto xs = footprint(x);
+                    bool uniform = true;
+                    const float* first = at(xs[0], ys[0]);
+                    for (int sy : ys) {
+                        for (int sx : xs) {
+                            const float* q = at(sx, sy);
+                            uniform = uniform && std::equal(first, first + 4, q);
+                        }
+                    }
+                    const bool on_palette = matcher.contains({p[0], p[1], p[2]});
+                    off += on_palette ? 0 : 1;
+                    off_uniform += (!on_palette && uniform) ? 1 : 0;
+                    uniform_opaque += uniform ? 1 : 0;
+                }
+            }
+        }
+        MESSAGE("idle0, 8 views: " << off << " off-palette pixels, " << off_uniform
+                                   << " of them with a uniform footprint; " << uniform_opaque
+                                   << " opaque pixels with a uniform footprint");
+        CHECK(off > 0);
+        CHECK(uniform_opaque > 0);
+        CHECK(off_uniform == 0);
+    }
+    for (const Image& cell : both.cells) {
+        for (int y = 0; y < cell.height; ++y) {
+            for (int x = 0; x < cell.width; ++x) {
+                const std::uint8_t* p = cell.pixel(x, y);
+                CHECK((p[3] == 0 || p[3] == 255));
+                if (p[3] == 255) CHECK(matcher.contains({p[0], p[1], p[2]}));
+            }
+        }
+    }
+
+    // Per (action, view) numbers add up; the contract carries them; the
+    // cache keeps them.
+    PaletteStats sum;
+    for (const RenderRecord& r : before.renders) sum += r.palette;
+    CHECK(sum == b);
+    const std::string dir = fresh_dir("atlas_palette_report");
+    export_atlas(before, dir);
+    const json report = read_json(dir + "/pose-contract.json")["palette_report"];
+    CHECK(report["stage"] == "before");
+    CHECK(report["alpha_threshold"] == 0.5);
+    CHECK(report["palette_sha256"] == palette_sha256(job.settings.palette));
+    CHECK(report["outline_colour"].is_null());
+    REQUIRE(report["renders"].size() == 16);
+    CHECK(report["renders"][9]["action"] == "run");
+    CHECK(report["renders"][9]["view"] == "ne");
+    CHECK(report["renders"][9]["opaque"] == before.renders[9].palette.opaque);
+    CHECK(report["total"]["off_palette_before_snap"] == b.off_palette_before_snap);
+    CHECK(report["total"]["partial_alpha"] == b.partial_alpha);
+    CHECK(report["total"]["off_palette_output"] == b.off_palette_output);
+    job.settings.palette_stage = PaletteStage::Before;
+    const Atlas cached = render_atlas(renderer, job, cache);
+    for (const RenderRecord& r : cached.renders) CHECK(r.reused);
+    CHECK(cached.palette_total() == b);
+    CHECK(cached.cells == before.cells);
+    // An entry that lost its statistics is rendered again.
+    fs::remove(cache + "/" + before.renders[0].key + ".palette.json");
+    const Atlas repaired = render_atlas(renderer, job, cache);
+    CHECK_FALSE(repaired.renders[0].reused);
+    CHECK(repaired.renders[1].reused);
+    CHECK(repaired.palette_total() == b);
 }

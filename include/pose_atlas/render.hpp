@@ -97,9 +97,10 @@ public:
 
     /// Final cell: render_linear, [snap to the palette], downsample, [snap,
     /// threshold alpha], optional outline. Throws RenderError for invalid
-    /// settings.
+    /// settings. With a palette, `stats` (when given) receives this cell's
+    /// counts.
     Image render(const Model& model, const Pose& pose, const Profile& profile, const CameraGuide& guide,
-                 const RenderSettings& settings);
+                 const RenderSettings& settings, PaletteStats* stats = nullptr);
 
 private:
     struct State;

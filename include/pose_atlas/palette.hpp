@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Palette-locked output: a palette of sRGB colours read from JSON or PNG,
 // nearest-colour matching in Oklab, snapping of the supersampled render or
-// the final cell to the palette, and hard alpha.
+// the final cell to the palette, hard alpha, and the statistics that show
+// how far an image is from being palette-locked.
 #pragma once
 
 #include <array>
@@ -109,5 +110,24 @@ inline bool alpha_passes(std::uint8_t a, double threshold) { return a / 255.0 >=
 /// Hard alpha: pixels whose coverage is at least `threshold` become alpha
 /// 255, all others (0, 0, 0, 0).
 void threshold_alpha(Image& image, double threshold);
+
+/// Pixel counts of palette-locked renders (summed over cells).
+struct PaletteStats {
+    /// Opaque pixels of the output (after thresholding and outline).
+    std::int64_t opaque = 0;
+    /// Pixels that end up opaque whose colour is not in the palette, counted
+    /// after the downsample and before the final snap (stage after or
+    /// before_after); for stage before, which has no final snap, in the output.
+    std::int64_t off_palette_before_snap = 0;
+    /// Pixels with alpha strictly between 0 and 255 after the downsample,
+    /// before thresholding.
+    std::int64_t partial_alpha = 0;
+    /// Opaque output pixels outside the allowed set (palette plus the outline
+    /// colour when the outline is on).
+    std::int64_t off_palette_output = 0;
+
+    PaletteStats& operator+=(const PaletteStats& other);
+    bool operator==(const PaletteStats& other) const;
+};
 
 }  // namespace pose_atlas

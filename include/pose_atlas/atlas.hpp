@@ -42,6 +42,7 @@ struct RenderRecord {
     std::string view;
     std::string key;      // content hash of the render's inputs
     bool reused = false;  // taken from the cache instead of rendered
+    PaletteStats palette; // summed over the poses; zero without a palette
 };
 
 struct Atlas {
@@ -65,6 +66,8 @@ struct Atlas {
     const Image& cell(int view, int column) const {
         return cells[static_cast<std::size_t>(view * columns + column)];
     }
+    /// Palette statistics over every render.
+    PaletteStats palette_total() const;
 };
 
 /// Integer runtime durations (milliseconds, at least 1) of a plan's poses,
@@ -82,7 +85,9 @@ std::string render_key(const Atlas& atlas, const SamplingPlan& plan, int view);
 /// `cache_dir` (created if missing), each (action, view) is first looked up
 /// by its render key: a stored strip of that action's poses in that view is
 /// reused, otherwise the poses are rendered and the strip is stored as
-/// `<key>.png`. Atlas::renders reports which renders were reused.
+/// `<key>.png`. Atlas::renders reports which renders were reused. With a
+/// palette, each entry also keeps its palette statistics in
+/// `<key>.palette.json`; an entry without them is rendered again.
 Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& cache_dir = "");
 
 /// The whole atlas image.
@@ -98,8 +103,13 @@ std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_fil
 /// that view) and a "foot" slice over the cell with the pivot.
 AsepriteDocument aseprite_document(const Atlas& atlas);
 
+/// One line summarising the palette statistics of an atlas with a palette.
+std::string palette_summary(const Atlas& atlas);
+
 /// Write atlas.png, atlas.json, atlas.aseprite and pose-contract.json into
-/// `directory` (which must exist). Returns the files written.
+/// `directory` (which must exist). Returns the files written. With a palette
+/// the contract has a `palette_report` with the statistics per (action,
+/// view) and in total.
 std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& directory);
 
 /// Validation of an exported directory: the rules of the prototype's

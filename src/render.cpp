@@ -435,7 +435,7 @@ LinearImage Renderer::render_linear(const Model& model, const Pose& pose, const 
 }
 
 Image Renderer::render(const Model& model, const Pose& pose, const Profile& profile, const CameraGuide& guide,
-                       const RenderSettings& settings) {
+                       const RenderSettings& settings, PaletteStats* stats) {
     const auto problems = validate_render_settings(settings);
     if (!problems.empty()) throw RenderError("render settings: " + problems.front());
     LinearImage linear = render_linear(model, pose, profile, guide, settings);
@@ -447,9 +447,27 @@ Image Renderer::render(const Model& model, const Pose& pose, const Profile& prof
     PaletteMatcher matcher(settings.palette);
     if (snaps_before(settings.palette_stage)) snap_linear(linear, matcher);
     Image cell = downsample(linear, profile.supersampling, profile.resampling_filter);
+    PaletteStats counts;
+    for (std::size_t i = 0; i + 3 < cell.rgba.size(); i += 4) {
+        const std::uint8_t* p = cell.rgba.data() + i;
+        if (p[3] > 0 && p[3] < 255) ++counts.partial_alpha;
+        if (alpha_passes(p[3], settings.alpha_threshold) && !matcher.contains({p[0], p[1], p[2]})) {
+            ++counts.off_palette_before_snap;
+        }
+    }
     if (snaps_after(settings.palette_stage)) snap_image(cell, matcher);
     threshold_alpha(cell, settings.alpha_threshold);
     if (settings.style.outline) apply_outline(cell, settings.style.outline_colour);
+    for (std::size_t i = 0; i + 3 < cell.rgba.size(); i += 4) {
+        const std::uint8_t* p = cell.rgba.data() + i;
+        if (p[3] == 0) continue;
+        ++counts.opaque;
+        const Rgb8 c{p[0], p[1], p[2]};
+        if (!matcher.contains(c) && !(settings.style.outline && c == settings.style.outline_colour)) {
+            ++counts.off_palette_output;
+        }
+    }
+    if (stats != nullptr) *stats = counts;
     return cell;
 }
 

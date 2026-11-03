@@ -371,6 +371,7 @@ int render_command(const Args& args) {
     std::cout << line << "\n";
     std::cout << "renders: " << atlas.renders.size() - static_cast<std::size_t>(reused) << " rendered, " << reused
               << " reused from " << (no_cache ? std::string("(no cache)") : cache) << "\n";
+    if (pose_atlas::palette_active(atlas.settings)) std::cout << pose_atlas::palette_summary(atlas) << "\n";
     for (const std::string& file : pose_atlas::export_atlas(atlas, out)) {
         std::cout << "wrote " << (std::filesystem::path(out) / file).string() << "\n";
     }

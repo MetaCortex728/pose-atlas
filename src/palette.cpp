@@ -246,4 +246,17 @@ void threshold_alpha(Image& image, double threshold) {
     }
 }
 
+PaletteStats& PaletteStats::operator+=(const PaletteStats& other) {
+    opaque += other.opaque;
+    off_palette_before_snap += other.off_palette_before_snap;
+    partial_alpha += other.partial_alpha;
+    off_palette_output += other.off_palette_output;
+    return *this;
+}
+
+bool PaletteStats::operator==(const PaletteStats& other) const {
+    return opaque == other.opaque && off_palette_before_snap == other.off_palette_before_snap &&
+           partial_alpha == other.partial_alpha && off_palette_output == other.off_palette_output;
+}
+
 }  // namespace pose_atlas

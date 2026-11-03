@@ -140,6 +140,13 @@ TEST_CASE("cli: render the rig's two actions and validate them") {
     CHECK(run_cli(base + palette + " --palette-stage during").exit_code == 2);
     CHECK(run_cli(base + palette + " --alpha-threshold 0").exit_code == 2);
     CHECK(run_cli(base + palette + " --alpha-threshold 1.5").exit_code == 2);
+    const std::string palette_out = (root / "palette").string();
+    const std::string palette_base = "render \"" + rig + "\" --profile \"" + profile +
+                                     "\" --actions idle,run --poses 2 --outline --out \"" + palette_out + "\"" + palette;
+    const auto locked = run_cli(palette_base);
+    CHECK(locked.exit_code == 0);
+    CHECK(locked.output.find("palette: before_after, 16 colours: ") != std::string::npos);
+    CHECK(locked.output.find(" 0 off-palette in the output") != std::string::npos);
     const auto bad_palette = run_cli(base + " --palette /nonexistent/palette.json");
     CHECK(bad_palette.exit_code == 1);
     CHECK(bad_palette.output.find("/nonexistent/palette.json: cannot open file") != std::string::npos);

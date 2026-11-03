@@ -92,6 +92,26 @@ bool load_strip(const std::string& path, int cell, int poses, std::vector<Image>
     return true;
 }
 
+ordered_json stats_json(const PaletteStats& s) {
+    return {{"opaque", s.opaque},
+            {"off_palette_before_snap", s.off_palette_before_snap},
+            {"partial_alpha", s.partial_alpha},
+            {"off_palette_output", s.off_palette_output}};
+}
+
+bool load_stats(const std::string& path, PaletteStats& out) {
+    try {
+        const auto j = nlohmann::json::parse(read_text_file(path));
+        out.opaque = j.at("opaque").get<std::int64_t>();
+        out.off_palette_before_snap = j.at("off_palette_before_snap").get<std::int64_t>();
+        out.partial_alpha = j.at("partial_alpha").get<std::int64_t>();
+        out.off_palette_output = j.at("off_palette_output").get<std::int64_t>();
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 void store_strip(const std::string& path, const std::vector<Image>& cells) {
     const int cell = cells.front().width;
     Image strip(cell * static_cast<int>(cells.size()), cell);
@@ -147,18 +167,30 @@ Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& c
         std::vector<Pose> poses;  // evaluated on first use
         for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
             RenderRecord record{plan.action, kScreenHeadings[static_cast<std::size_t>(view)],
-                                render_key(atlas, plan, view), false};
+                                render_key(atlas, plan, view), false, {}};
             const std::string entry = cache_dir.empty() ? "" : join_path(cache_dir, record.key + ".png");
+            const bool palette = palette_active(job.settings);
+            const std::string stats_entry = cache_dir.empty() ? "" : join_path(cache_dir, record.key + ".palette.json");
             std::vector<Image> cells;
-            if (!entry.empty() && load_strip(entry, cell, plan.pose_count, cells)) {
+            if (!entry.empty() && load_strip(entry, cell, plan.pose_count, cells) &&
+                (!palette || load_stats(stats_entry, record.palette))) {
                 record.reused = true;
             } else {
+                cells.clear();
+                record.palette = {};
                 if (poses.empty()) {
                     for (const Sample& s : plan.samples) poses.push_back(evaluate(model, &animation, s.source_time_s));
                 }
                 const CameraGuide guide = camera_guide(job.profile, view);
-                for (const Pose& pose : poses) cells.push_back(renderer.render(model, pose, job.profile, guide, job.settings));
-                if (!entry.empty()) store_strip(entry, cells);
+                for (const Pose& pose : poses) {
+                    PaletteStats stats;
+                    cells.push_back(renderer.render(model, pose, job.profile, guide, job.settings, &stats));
+                    if (palette) record.palette += stats;
+                }
+                if (!entry.empty()) {
+                    store_strip(entry, cells);
+                    if (palette) write_text_file(stats_entry, stats_json(record.palette).dump() + "\n");
+                }
             }
             for (std::size_t i = 0; i < cells.size(); ++i) {
                 atlas.cells[static_cast<std::size_t>(view * atlas.columns + first_column) + i] = std::move(cells[i]);
@@ -168,6 +200,21 @@ Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& c
         first_column += plan.pose_count;
     }
     return atlas;
+}
+
+PaletteStats Atlas::palette_total() const {
+    PaletteStats total;
+    for (const RenderRecord& r : renders) total += r.palette;
+    return total;
+}
+
+std::string palette_summary(const Atlas& atlas) {
+    const PaletteStats t = atlas.palette_total();
+    return "palette: " + to_string(atlas.settings.palette_stage) + ", " + std::to_string(atlas.settings.palette.size()) +
+           " colours: " + std::to_string(t.opaque) + " opaque pixels, " + std::to_string(t.off_palette_before_snap) +
+           " off-palette before the final snap, " + std::to_string(t.partial_alpha) +
+           " with partial alpha before thresholding, " + std::to_string(t.off_palette_output) +
+           " off-palette in the output";
 }
 
 Image atlas_image(const Atlas& atlas) {
@@ -366,6 +413,22 @@ std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& dir
                           {"projected_heading", {forward.x / length, forward.y / length}}});
     }
     c["frames"] = frames;
+    if (palette_active(atlas.settings)) {
+        ordered_json renders = ordered_json::array();
+        for (const RenderRecord& r : atlas.renders) {
+            ordered_json item = {{"action", r.action}, {"view", r.view}};
+            item.update(stats_json(r.palette));
+            renders.push_back(item);
+        }
+        c["palette_report"] = {
+            {"stage", to_string(atlas.settings.palette_stage)},
+            {"alpha_threshold", atlas.settings.alpha_threshold},
+            {"palette_sha256", palette_sha256(atlas.settings.palette)},
+            {"outline_colour", atlas.settings.style.outline ? ordered_json(hex_colour(atlas.settings.style.outline_colour))
+                                                            : ordered_json(nullptr)},
+            {"renders", renders},
+            {"total", stats_json(atlas.palette_total())}};
+    }
     c["files"] = {{"atlas", {{"file", kAtlasPng}, {"sha256", sha256_hex(png)}}},
                   {"metadata", {{"file", kAtlasJson}, {"sha256", sha256_hex(metadata)}}},
                   {"aseprite", {{"file", kAtlasAseprite}, {"sha256", sha256_hex(aseprite)}}}};
