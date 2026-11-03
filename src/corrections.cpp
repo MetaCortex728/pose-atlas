@@ -123,6 +123,9 @@ ExistingCorrections read_existing_corrections(const std::string& directory, bool
         correction.key = key;
         correction.frame = static_cast<int>(f);
         correction.image = std::move(images[i]);
+        for (const AsepriteCel& cel : doc.frames[f].cels) {
+            if (cel.layer == corrections_layer && cel.user_text == kStaleCorrectionText) correction.marked_stale = true;
+        }
         if (contract && contract->render_sha256.count(key) != 0) {
             correction.render_sha256 = contract->render_sha256.at(key);
         } else {
@@ -171,7 +174,7 @@ CorrectionsReport carry_corrections(const ExistingCorrections& existing, Atlas& 
                 std::copy(p, p + 4, target.image.pixel(x, y));
             }
         }
-        target.stale = sha256_hex(render.rgba) != c.render_sha256;
+        target.stale = c.marked_stale || sha256_hex(render.rgba) != c.render_sha256;
         report.carried.push_back({c.key, c.frame, static_cast<int>(found->second), target.stale});
     }
     return report;

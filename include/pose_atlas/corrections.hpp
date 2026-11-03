@@ -29,6 +29,7 @@ struct ExistingCorrection {
     int frame = 0;              // frame index in the existing file
     Image image;                // the corrections layer, sprite-sized
     std::string render_sha256;  // of the render it was painted over
+    bool marked_stale = false;  // its cel still has the stale mark
 };
 
 struct ExistingCorrections {
@@ -82,7 +83,8 @@ struct CorrectionsReport {
 /// Puts each existing correction into `atlas.corrections` at the frame with
 /// the same key, at the same position (clipped to the cell when the cell size
 /// changed). A correction is stale when that frame's render (the SHA-256 of
-/// its RGBA) differs from the one it was painted over. Corrections whose key
+/// its RGBA) differs from the one it was painted over, or when its cel still
+/// has the stale mark (the artist removes the mark after reviewing it). Corrections whose key
 /// is not in the atlas, or whose key an earlier painted frame already had,
 /// are orphaned: left out (they remain in the backup) and reported.
 CorrectionsReport carry_corrections(const ExistingCorrections& existing, Atlas& atlas);

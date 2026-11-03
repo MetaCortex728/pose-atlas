@@ -221,6 +221,20 @@ TEST_CASE("corrections: carried across re-renders by frame key") {
             CHECK(cels[1].user_text == "stale: render changed");
             CHECK(cels[1].user_colour == kStaleCorrectionColour);
         }
+        // Rendering the same again keeps the mark: the render did not change
+        // this time, but nobody has reviewed the corrections yet.
+        CHECK(rerender(job, dir, cache).stale_count() == 4);
+        // Once the artist removes the mark, an unchanged render is not stale.
+        AsepriteDocument reviewed = read_aseprite(read_file(dir + "/atlas.aseprite"));
+        for (int f : {1, 5, 6, 14}) {
+            AsepriteCel& cel = reviewed.frames[static_cast<std::size_t>(f)].cels[1];
+            cel.user_text.clear();
+            cel.user_colour.reset();
+        }
+        write_file(dir + "/atlas.aseprite", write_aseprite(reviewed));
+        const CorrectionsReport after_review = rerender(job, dir, cache);
+        CHECK(after_review.carried.size() == 4);
+        CHECK(after_review.stale_count() == 0);
     }
 
     SUBCASE("changed render settings (outline): carried and stale") {
