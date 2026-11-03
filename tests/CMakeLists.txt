@@ -1,7 +1,9 @@
 add_executable(pose_atlas_tests
     main.cpp
     test_camera.cpp
+    test_model.cpp
     test_profile.cpp
+    test_sampling.cpp
     test_test_rig.cpp
     test_version.cpp)
 target_link_libraries(pose_atlas_tests PRIVATE

@@ -56,3 +56,29 @@ TEST_CASE("cli: make-test-rig writes the generated GLB") {
                                           std::istreambuf_iterator<char>());
     CHECK(bytes == pose_atlas::test_rig::make_glb());
 }
+
+TEST_CASE("cli: inspect and plan the generated rig") {
+    const std::string path = std::string(POSE_ATLAS_TEST_OUTPUT_DIR) + "/cli_plan_rig.glb";
+    pose_atlas::test_rig::write_glb(path);
+    const std::string quoted = "\"" + path + "\"";
+
+    const auto inspect = run_cli("inspect " + quoted);
+    CHECK(inspect.exit_code == 0);
+    CHECK(inspect.output.find("\"name\": \"run\"") != std::string::npos);
+
+    const auto plan = run_cli("plan " + quoted + " --action run --poses 8 --cycle-m 1.6 --speed-mps 4");
+    CHECK(plan.exit_code == 0);
+    CHECK(plan.output.find("\"cadence\": \"distance\"") != std::string::npos);
+    CHECK(plan.output.find("\"end_point\": \"exclude\"") != std::string::npos);
+
+    const auto included = run_cli("plan " + quoted + " --action run --poses 9 --include-end");
+    CHECK(included.exit_code == 0);
+    CHECK(included.output.find("repeats the first") != std::string::npos);
+
+    CHECK(run_cli("plan " + quoted + " --action run").exit_code == 2);
+    CHECK(run_cli("plan " + quoted + " --action run --poses 8 --rate 2 --frame-ms 80").exit_code == 2);
+    CHECK(run_cli("plan " + quoted + " --action run --poses x").exit_code == 2);
+    const auto missing = run_cli("plan " + quoted + " --action walk --poses 8");
+    CHECK(missing.exit_code == 1);
+    CHECK(missing.output.find("no animation \"walk\"") != std::string::npos);
+}

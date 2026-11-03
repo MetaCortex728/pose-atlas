@@ -48,7 +48,11 @@ add_subdirectory(third_party)
 # Core library.
 add_library(pose_atlas STATIC
     src/camera.cpp
+    src/gltf_loader.cpp
+    src/math.cpp
+    src/pose.cpp
     src/profile.cpp
+    src/sampling.cpp
     src/test_rig.cpp
     src/version.cpp)
 add_library(pose_atlas::pose_atlas ALIAS pose_atlas)
@@ -57,7 +61,8 @@ target_include_directories(pose_atlas PUBLIC
 target_compile_definitions(pose_atlas PRIVATE
     POSE_ATLAS_VERSION_STRING="${PROJECT_VERSION}")
 target_link_libraries(pose_atlas
-    PRIVATE $<BUILD_INTERFACE:pose_atlas_json> $<BUILD_INTERFACE:pose_atlas_options>)
+    PRIVATE $<BUILD_INTERFACE:pose_atlas_json> $<BUILD_INTERFACE:pose_atlas_cgltf>
+        $<BUILD_INTERFACE:pose_atlas_options>)
 
 if(POSE_ATLAS_BUILD_APPS)
     add_subdirectory(apps)
