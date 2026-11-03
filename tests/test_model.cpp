@@ -3,7 +3,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include "pose_atlas/model.hpp"
 #include "pose_atlas/test_rig.hpp"
@@ -247,4 +249,112 @@ TEST_CASE("model: loading from a file and loading errors") {
     std::vector<std::uint8_t> truncated = rig::make_glb();
     truncated.resize(truncated.size() / 2);
     CHECK_THROWS_AS(load_gltf(truncated, "truncated.glb"), ModelError);
+}
+
+namespace {
+
+std::string base64(const std::vector<std::uint8_t>& data) {
+    static const char* digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < data.size(); i += 3) {
+        const std::uint32_t n = (std::uint32_t{data[i]} << 16) |
+                                (i + 1 < data.size() ? std::uint32_t{data[i + 1]} << 8 : 0u) |
+                                (i + 2 < data.size() ? std::uint32_t{data[i + 2]} : 0u);
+        out += digits[(n >> 18) & 63];
+        out += digits[(n >> 12) & 63];
+        out += i + 1 < data.size() ? digits[(n >> 6) & 63] : '=';
+        out += i + 2 < data.size() ? digits[n & 63] : '=';
+    }
+    return out;
+}
+
+// One textured triangle as self-contained glTF JSON: buffer and image as
+// data URIs (or the image as an external file), the texture on TEXCOORD_1,
+// selected and transformed by KHR_texture_transform.
+std::string textured_triangle(const std::string& image_uri) {
+    const float data[] = {0, 0, 0, 1, 0, 0, 0, 1, 0,     // POSITION
+                          0, 0, 1, 0, 0, 1,              // TEXCOORD_0
+                          0, 0, 1, 0, 0, 1};             // TEXCOORD_1
+    std::vector<std::uint8_t> bytes(sizeof data);
+    std::memcpy(bytes.data(), data, sizeof data);
+    return R"({"asset": {"version": "2.0"},
+      "extensionsUsed": ["KHR_texture_transform"],
+      "buffers": [{"byteLength": 84, "uri": "data:application/octet-stream;base64,)" + base64(bytes) + R"("}],
+      "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": 36, "byteLength": 24},
+                      {"buffer": 0, "byteOffset": 60, "byteLength": 24}],
+      "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]},
+                    {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"},
+                    {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2"}],
+      "images": [{"uri": ")" + image_uri + R"("}],
+      "samplers": [{"wrapS": 33648, "wrapT": 33071}],
+      "textures": [{"source": 0, "sampler": 0}],
+      "materials": [{"name": "m", "alphaMode": "MASK", "alphaCutoff": 0.25,
+                     "pbrMetallicRoughness": {"baseColorFactor": [1, 0.5, 1, 1],
+                       "baseColorTexture": {"index": 0, "texCoord": 0,
+                         "extensions": {"KHR_texture_transform": {"offset": [0.5, 0.25], "rotation": 1.5707963267948966,
+                                                                   "scale": [2, 3], "texCoord": 1}}}}}],
+      "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1, "TEXCOORD_1": 2}, "material": 0}]}],
+      "nodes": [{"mesh": 0}], "scenes": [{"nodes": [0]}], "scene": 0})";
+}
+
+}  // namespace
+
+TEST_CASE("model: base colour textures") {
+    const Model& model = rig_model();
+    const auto& d = rig::description();
+    REQUIRE(model.textures.size() == 1);
+    CHECK(model.textures[0].image == d.textures[0]);
+    CHECK(model.textures[0].wrap_s == Wrap::ClampToEdge);
+    CHECK(model.textures[0].wrap_t == Wrap::ClampToEdge);
+    CHECK(model.textures[0].id != 0);
+    const Primitive& torso = model.meshes[0].primitives[3];
+    CHECK(torso.material == "torso");
+    CHECK(torso.base_colour_texture == 0);
+    REQUIRE(torso.texcoords.size() == torso.positions.size());
+    // On the +Z face, u follows X and v = 0 is the top.
+    for (std::size_t v = 0; v < torso.positions.size(); ++v) {
+        if (torso.normals[v].z != 1.0) continue;
+        CHECK(torso.texcoords[v][0] == (torso.positions[v].x > 0 ? 1.0f : 0.0f));
+        CHECK(torso.texcoords[v][1] == (torso.positions[v].y > 1.3 ? 0.0f : 1.0f));
+    }
+    const Primitive& head = model.meshes[0].primitives[5];
+    CHECK(head.base_colour_texture == -1);
+    CHECK(head.texcoords.empty());
+
+    // KHR_texture_transform on another texture coordinate set, an image in a
+    // data URI, a sampler and alpha mode MASK.
+    Image texels(2, 1);
+    texels.pixel(0, 0)[0] = 200;
+    texels.pixel(1, 0)[3] = 255;
+    const std::string png_uri = "data:image/png;base64," + base64(encode_png(texels));
+    const std::string text = textured_triangle(png_uri);
+    const Model tri = load_gltf(std::vector<std::uint8_t>(text.begin(), text.end()), "triangle.gltf");
+    REQUIRE(tri.textures.size() == 1);
+    CHECK(tri.textures[0].image == texels);
+    CHECK(tri.textures[0].wrap_s == Wrap::MirroredRepeat);
+    const Primitive& p = tri.meshes[0].primitives[0];
+    CHECK(p.alpha_mode == AlphaMode::Mask);
+    CHECK(p.alpha_cutoff == 0.25f);
+    CHECK(p.base_colour[1] == 0.5f);
+    REQUIRE(p.texcoords.size() == 3);
+    // uv' = T R S uv with rotation pi/2: u' = 3 v + 0.5, v' = -2 u + 0.25.
+    // TEXCOORD_1 is (0, 0), (1, 0), (0, 1).
+    CHECK(p.texcoords[0][0] == doctest::Approx(0.5));
+    CHECK(p.texcoords[0][1] == doctest::Approx(0.25));
+    CHECK(p.texcoords[1][0] == doctest::Approx(0.5));
+    CHECK(p.texcoords[1][1] == doctest::Approx(-1.75));
+    CHECK(p.texcoords[2][0] == doctest::Approx(3.5));
+    CHECK(p.texcoords[2][1] == doctest::Approx(0.25));
+
+    // An external image next to the .gltf file; from bytes it cannot be found.
+    const std::string dir = POSE_ATLAS_TEST_OUTPUT_DIR;
+    write_file(dir + "/tex image.png", encode_png(texels));
+    write_text_file(dir + "/textured.gltf", textured_triangle("tex%20image.png"));
+    CHECK(load_gltf(dir + "/textured.gltf").textures[0].image == texels);
+    const std::string external = textured_triangle("tex%20image.png");
+    CHECK_THROWS_WITH_AS(load_gltf(std::vector<std::uint8_t>(external.begin(), external.end()), "x.gltf"),
+                         doctest::Contains("external file"), ModelError);
+    const std::string broken = textured_triangle("data:image/png;base64,AAAA");
+    CHECK_THROWS_WITH_AS(load_gltf(std::vector<std::uint8_t>(broken.begin(), broken.end()), "x.gltf"),
+                         doctest::Contains("cannot decode image"), ModelError);
 }

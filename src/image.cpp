@@ -82,11 +82,19 @@ std::vector<std::uint8_t> encode_png(const Image& image) {
 }
 
 Image decode_png(const std::vector<std::uint8_t>& bytes, const std::string& source) {
+    static const std::uint8_t signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+    if (bytes.size() < 8 || std::memcmp(bytes.data(), signature, 8) != 0) {
+        throw ImageError(source + ": cannot decode PNG (not a PNG file)");
+    }
+    return decode_image(bytes, source);
+}
+
+Image decode_image(const std::vector<std::uint8_t>& bytes, const std::string& source) {
     int w = 0, h = 0, channels = 0;
     std::unique_ptr<stbi_uc, void (*)(void*)> data(
         stbi_load_from_memory(bytes.data(), checked_int(bytes.size(), source.c_str()), &w, &h, &channels, 4),
         stbi_image_free);
-    if (!data) throw ImageError(source + ": cannot decode PNG (" + stbi_failure_reason() + ")");
+    if (!data) throw ImageError(source + ": cannot decode image (" + stbi_failure_reason() + ")");
     Image image(w, h);
     std::memcpy(image.rgba.data(), data.get(), image.rgba.size());
     return image;

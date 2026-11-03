@@ -24,15 +24,24 @@
 
 namespace pose_atlas {
 
-/// Style: flat region colours, the base colour of each material, without
-/// lighting. Version this when the meaning of the fields changes.
+/// Style: flat region colours, the base colour of each material (factor
+/// times base colour texture), without lighting. Version this when the
+/// meaning of the fields changes.
 struct RenderStyle {
     bool outline = false;
     std::array<std::uint8_t, 3> outline_colour = {0x1a, 0x14, 0x1e};  // sRGB
 };
 
+/// Sampling of base colour textures at the supersampled resolution, without
+/// mipmaps. Nearest keeps texels hard-edged.
+enum class TextureFilter { Nearest, Bilinear };
+std::string to_string(TextureFilter filter);
+/// Parses "nearest" or "bilinear"; throws std::invalid_argument otherwise.
+TextureFilter parse_texture_filter(const std::string& text);
+
 struct RenderSettings {
     RenderStyle style;
+    TextureFilter texture_filter = TextureFilter::Nearest;
     /// When not empty, draw only primitives with these material names.
     std::vector<std::string> only_materials;
     /// Never draw primitives with these material names.
@@ -40,7 +49,7 @@ struct RenderSettings {
 };
 
 /// Name of the style implementation; part of every cache key.
-inline constexpr const char* kRenderStyleName = "flat-v1";
+inline constexpr const char* kRenderStyleName = "flat-v2";
 
 /// Canonical JSON of the settings (stable key order), used for hashing and
 /// recorded in the contract.

@@ -3,6 +3,9 @@
 
 #include <cgltf.h>
 
+#include <atomic>
+#include <cmath>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -33,9 +36,50 @@ struct DataDeleter {
 };
 using DataPtr = std::unique_ptr<cgltf_data, DataDeleter>;
 
+std::atomic<std::uint64_t> next_texture_id{1};
+
+// RFC 4648 base64 (data: URIs). Returns false on malformed input.
+bool decode_base64(const char* text, std::size_t size, std::vector<std::uint8_t>& out) {
+    auto value = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    out.clear();
+    std::uint32_t buffer = 0;
+    int bits = 0;
+    std::size_t i = 0;
+    for (; i < size && text[i] != '='; ++i) {
+        const int v = value(text[i]);
+        if (v < 0) return false;
+        buffer = (buffer << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<std::uint8_t>((buffer >> bits) & 0xFFu));
+        }
+    }
+    for (; i < size; ++i) {
+        if (text[i] != '=') return false;
+    }
+    return true;
+}
+
+Wrap wrap_mode(cgltf_wrap_mode mode) {
+    switch (mode) {
+        case cgltf_wrap_mode_clamp_to_edge: return Wrap::ClampToEdge;
+        case cgltf_wrap_mode_mirrored_repeat: return Wrap::MirroredRepeat;
+        default: return Wrap::Repeat;
+    }
+}
+
 class Converter {
 public:
-    Converter(const cgltf_data* data, std::string source) : data_(data), source_(std::move(source)) {}
+    Converter(const cgltf_data* data, std::string source, std::string base_path)
+        : data_(data), source_(std::move(source)), base_path_(std::move(base_path)) {}
 
     Model convert() {
         Model model;
@@ -93,24 +137,25 @@ private:
         }
     }
 
-    void convert_meshes(Model& model) const {
+    void convert_meshes(Model& model) {
         for (cgltf_size m = 0; m < data_->meshes_count; ++m) {
             const cgltf_mesh& in = data_->meshes[m];
             Mesh mesh;
             mesh.name = name_or(in.name, "mesh" + std::to_string(m));
             for (cgltf_size p = 0; p < in.primitives_count; ++p) {
                 const std::string what = "mesh \"" + mesh.name + "\" primitive " + std::to_string(p);
-                mesh.primitives.push_back(convert_primitive(in.primitives[p], what));
+                mesh.primitives.push_back(convert_primitive(model, in.primitives[p], what));
             }
             model.meshes.push_back(std::move(mesh));
         }
     }
 
-    Primitive convert_primitive(const cgltf_primitive& in, const std::string& what) const {
+    Primitive convert_primitive(Model& model, const cgltf_primitive& in, const std::string& what) {
         if (in.type != cgltf_primitive_type_triangles) fail(what + ": only triangle lists are supported");
         Primitive out;
         const cgltf_accessor* joints = nullptr;
         const cgltf_accessor* weights = nullptr;
+        std::map<cgltf_int, const cgltf_accessor*> texcoord_sets;
         for (cgltf_size a = 0; a < in.attributes_count; ++a) {
             const cgltf_attribute& attribute = in.attributes[a];
             if (attribute.type == cgltf_attribute_type_position) {
@@ -123,6 +168,8 @@ private:
                 joints = attribute.data;
             } else if (attribute.type == cgltf_attribute_type_weights && attribute.index == 0) {
                 weights = attribute.data;
+            } else if (attribute.type == cgltf_attribute_type_texcoord) {
+                texcoord_sets[attribute.index] = attribute.data;
             }
         }
         if (out.positions.empty()) fail(what + ": no POSITION attribute");
@@ -163,11 +210,107 @@ private:
         if (in.material != nullptr) {
             out.material = name_or(in.material->name, "material" + std::to_string(cgltf_material_index(data_, in.material)));
             if (in.material->has_pbr_metallic_roughness) {
-                const float* c = in.material->pbr_metallic_roughness.base_color_factor;
+                const cgltf_pbr_metallic_roughness& pbr = in.material->pbr_metallic_roughness;
+                const float* c = pbr.base_color_factor;
                 out.base_colour = {c[0], c[1], c[2], c[3]};
+                if (pbr.base_color_texture.texture != nullptr) {
+                    convert_texture_view(model, pbr.base_color_texture, texcoord_sets, out, what);
+                }
+            }
+            if (in.material->alpha_mode == cgltf_alpha_mode_mask) {
+                out.alpha_mode = AlphaMode::Mask;
+                out.alpha_cutoff = in.material->alpha_cutoff;
+            } else if (in.material->alpha_mode == cgltf_alpha_mode_blend) {
+                out.alpha_mode = AlphaMode::Blend;
             }
         }
         return out;
+    }
+
+    // The base colour texture of a primitive: its texture coordinates (with
+    // KHR_texture_transform applied) and the texture itself, decoded once.
+    void convert_texture_view(Model& model, const cgltf_texture_view& view,
+                              const std::map<cgltf_int, const cgltf_accessor*>& sets, Primitive& out,
+                              const std::string& what) {
+        cgltf_int set = view.texcoord;
+        if (view.has_transform && view.transform.has_texcoord) set = view.transform.texcoord;
+        const auto found = sets.find(set);
+        if (found == sets.end()) {
+            fail(what + ": baseColorTexture uses TEXCOORD_" + std::to_string(set) + ", which the primitive lacks");
+        }
+        const auto uv = floats(found->second, 2, what + " TEXCOORD_" + std::to_string(set));
+        if (uv.size() != out.positions.size() * 2) fail(what + ": TEXCOORD count differs from POSITION count");
+        // KHR_texture_transform: uv' = T(offset) * R(rotation) * S(scale) * uv.
+        double ox = 0, oy = 0, rotation = 0, sx = 1, sy = 1;
+        if (view.has_transform) {
+            ox = view.transform.offset[0];
+            oy = view.transform.offset[1];
+            rotation = view.transform.rotation;
+            sx = view.transform.scale[0];
+            sy = view.transform.scale[1];
+        }
+        const double c = std::cos(rotation), s = std::sin(rotation);
+        for (std::size_t i = 0; i + 1 < uv.size(); i += 2) {
+            const double u = uv[i] * sx, v = uv[i + 1] * sy;
+            out.texcoords.push_back({static_cast<float>(c * u + s * v + ox), static_cast<float>(-s * u + c * v + oy)});
+        }
+        const cgltf_size index = cgltf_texture_index(data_, view.texture);
+        const auto known = texture_map_.find(index);
+        if (known != texture_map_.end()) {
+            out.base_colour_texture = known->second;
+            return;
+        }
+        const cgltf_texture& texture = *view.texture;
+        Texture t;
+        t.name = name_or(texture.name, "texture" + std::to_string(index));
+        if (texture.image == nullptr) {
+            fail(what + ": texture \"" + t.name + "\" has no PNG or JPEG image (KTX2 and WebP are not supported)");
+        }
+        try {
+            t.image = decode_image(image_bytes(*texture.image, what), "texture \"" + t.name + "\"");
+        } catch (const ImageError& e) {
+            fail(what + ": " + e.what());
+        }
+        if (texture.sampler != nullptr) {
+            t.wrap_s = wrap_mode(texture.sampler->wrap_s);
+            t.wrap_t = wrap_mode(texture.sampler->wrap_t);
+        }
+        t.id = next_texture_id.fetch_add(1);
+        model.textures.push_back(std::move(t));
+        out.base_colour_texture = static_cast<int>(model.textures.size() - 1);
+        texture_map_[index] = out.base_colour_texture;
+    }
+
+    // Encoded bytes of an image: from a buffer view, a data: URI or a file
+    // next to the glTF file.
+    std::vector<std::uint8_t> image_bytes(const cgltf_image& image, const std::string& what) const {
+        if (image.buffer_view != nullptr) {
+            const cgltf_buffer_view& view = *image.buffer_view;
+            const auto* data = static_cast<const std::uint8_t*>(view.buffer->data);
+            if (data == nullptr) fail(what + ": image buffer is not loaded");
+            return {data + view.offset, data + view.offset + view.size};
+        }
+        if (image.uri == nullptr) fail(what + ": image has neither a bufferView nor a uri");
+        const std::string uri = image.uri;
+        if (uri.rfind("data:", 0) == 0) {
+            const auto marker = uri.find(";base64,");
+            std::vector<std::uint8_t> bytes;
+            if (marker == std::string::npos ||
+                !decode_base64(uri.data() + marker + 8, uri.size() - marker - 8, bytes)) {
+                fail(what + ": image data URI is not base64");
+            }
+            return bytes;
+        }
+        if (base_path_.empty()) fail(what + ": image \"" + uri + "\" is an external file, but the model was not loaded from a file");
+        std::string decoded = uri;
+        decoded.resize(cgltf_decode_uri(&decoded[0]));
+        const auto slash = base_path_.find_last_of("/\\");
+        const std::string path = (slash == std::string::npos ? std::string() : base_path_.substr(0, slash + 1)) + decoded;
+        try {
+            return read_file(path);
+        } catch (const std::exception& e) {
+            fail(what + ": " + e.what());
+        }
     }
 
     void convert_skins(Model& model) const {
@@ -258,6 +401,8 @@ private:
 
     const cgltf_data* data_;
     std::string source_;
+    std::string base_path_;  // the glTF file, for external images; empty for bytes
+    std::map<cgltf_size, int> texture_map_;  // glTF texture -> Model::textures
 };
 
 Model finish(cgltf_data* raw, cgltf_result parsed, const std::string& source, const char* buffer_path) {
@@ -270,7 +415,7 @@ Model finish(cgltf_data* raw, cgltf_result parsed, const std::string& source, co
     }
     const cgltf_result valid = cgltf_validate(data.get());
     if (valid != cgltf_result_success) throw ModelError(source + ": failed validation: " + result_name(valid));
-    return Converter(data.get(), source).convert();
+    return Converter(data.get(), source, buffer_path != nullptr ? buffer_path : "").convert();
 }
 
 }  // namespace

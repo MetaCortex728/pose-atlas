@@ -25,4 +25,5 @@ licence.
   https://github.com/nothings/stb (commit d14d46f6b44456eb88beac58cba833a4135d4c89)
   MIT licence or public domain, at your choice; third_party/stb/LICENSE.
   stb_image.h and stb_image_write.h are unmodified copies; stb_impl.c only
-  compiles their PNG and zlib parts.
+  compiles their PNG, JPEG and zlib parts (PNG/JPEG decoding of the atlas and
+  glTF base colour textures, PNG encoding).

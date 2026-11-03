@@ -90,6 +90,11 @@ double linear_to_srgb(double linear) {
     return 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055;
 }
 
+double srgb_to_linear(double encoded) {
+    if (encoded <= 0.04045) return encoded / 12.92;
+    return std::pow((encoded + 0.055) / 1.055, 2.4);
+}
+
 Image downsample(const LinearImage& source, int factor, ResampleFilter filter) {
     if (factor < 1) throw std::invalid_argument("downsample: factor must be at least 1");
     if (source.width % factor != 0 || source.height % factor != 0) {

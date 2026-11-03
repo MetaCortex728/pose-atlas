@@ -37,5 +37,7 @@ void apply_outline(Image& image, const std::array<std::uint8_t, 3>& colour);
 
 /// sRGB transfer function (IEC 61966-2-1), linear [0, 1] to encoded [0, 1].
 double linear_to_srgb(double linear);
+/// Its inverse, encoded [0, 1] to linear [0, 1].
+double srgb_to_linear(double encoded);
 
 }  // namespace pose_atlas

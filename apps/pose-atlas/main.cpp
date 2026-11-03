@@ -47,6 +47,7 @@ constexpr const char* kUsage =
     "      --poses N | A=N,B=M         poses per action (default 8)\n"
     "      --rate R | --frame-ms MS    runtime cadence (default: source rate 1)\n"
     "      --outline                   one-pixel outline, hard edges\n"
+    "      --texture-filter F          nearest (default) or bilinear base colour textures\n"
     "      --hide-material NAME        do not draw this material (repeatable)\n"
     "      --cache DIR | --no-cache    render cache (default <out>/cache)\n"
     "  validate <dir> [--report FILE]  check an exported directory against its contract\n"
@@ -274,6 +275,12 @@ int render_command(const Args& args) {
             cadence.kind = pose_atlas::Cadence::Kind::FixedFrame;
             cadence.frame_ms = parse_number(option, value);
             have_frame = true;
+        } else if (option == "--texture-filter") {
+            try {
+                job.settings.texture_filter = pose_atlas::parse_texture_filter(value);
+            } catch (const std::invalid_argument& e) {
+                throw UsageError(std::string("--texture-filter: ") + e.what());
+            }
         } else if (option == "--hide-material") {
             job.settings.hidden_materials.push_back(value);
         } else if (option == "--cache") {

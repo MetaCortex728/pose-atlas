@@ -51,6 +51,9 @@ Bounds alpha_bounds(const Image& image);
 std::vector<std::uint8_t> encode_png(const Image& image);
 /// Decode a PNG into RGBA; throws ImageError.
 Image decode_png(const std::vector<std::uint8_t>& bytes, const std::string& source = "png");
+/// Decode a PNG or (baseline or progressive) JPEG into RGBA; throws
+/// ImageError for anything else.
+Image decode_image(const std::vector<std::uint8_t>& bytes, const std::string& source = "image");
 
 /// zlib stream (RFC 1950) of `data`, and back.
 std::vector<std::uint8_t> zlib_compress(const std::uint8_t* data, std::size_t size);

@@ -1,6 +1,7 @@
-/* Compiles the implementations of the vendored stb headers: PNG decoding and
-   encoding from memory, and their zlib (de)compressors. */
+/* Compiles the implementations of the vendored stb headers: PNG and JPEG
+   decoding and PNG encoding from memory, and their zlib (de)compressors. */
 #define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
 #define STBI_NO_STDIO
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR

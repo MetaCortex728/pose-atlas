@@ -36,7 +36,7 @@ Description build_description() {
         {"pivot_marker", kPivot, {-0.06, 0.0, -0.06}, {0.06, 0.01, 0.06}, {1.0f, 0.0f, 1.0f}, -1},
         {"pivot_forward_tick", kPivot, {-0.015, 0.0, 0.06}, {0.015, 0.01, 0.22}, {1.0f, 0.0f, 1.0f}, -1},
         {"pelvis", kHips, {-0.17, -0.08, -0.10}, {0.17, 0.10, 0.10}, {0.35f, 0.35f, 0.38f}, -1},
-        {"torso", kTorso, {-0.20, 0.0, -0.12}, {0.20, 0.55, 0.12}, {0.10f, 0.25f, 0.80f}, kHips},
+        {"torso", kTorso, {-0.20, 0.0, -0.12}, {0.20, 0.55, 0.12}, {1.0f, 0.8f, 1.0f}, kHips, 0},
         {"backpack", kTorso, {-0.14, 0.15, -0.24}, {0.14, 0.50, -0.12}, {0.40f, 0.22f, 0.08f}, -1},
         {"head", kHead, {-0.11, 0.0, -0.11}, {0.11, 0.26, 0.11}, {0.90f, 0.70f, 0.55f}, -1},
         {"nose", kHead, {-0.025, 0.10, 0.11}, {0.025, 0.15, 0.16}, {0.85f, 0.05f, 0.05f}, -1},
@@ -48,6 +48,14 @@ Description build_description() {
         {"leg_r", kLegR, {-0.06, -0.95, -0.07}, {0.06, 0.0, 0.07}, {0.50f, 0.15f, 0.60f}, -1},
         {"foot_r", kLegR, {-0.06, -0.95, 0.07}, {0.06, -0.88, 0.18}, {0.25f, 0.05f, 0.30f}, -1},
     };
+
+    // A 2x2 checker in four distinct colours, so that orientation shows:
+    // blue, cream / red, navy (rows top to bottom).
+    Image checker(2, 2);
+    const std::uint8_t texels[4][4] = {
+        {0x20, 0x50, 0xc0, 0xff}, {0xe8, 0xe0, 0xc8, 0xff}, {0xc0, 0x30, 0x30, 0xff}, {0x20, 0x30, 0x40, 0xff}};
+    for (std::size_t i = 0; i < 4; ++i) std::memcpy(checker.rgba.data() + i * 4, texels[i], 4);
+    d.textures = {checker};
 
     const Vec3 x{1, 0, 0};
     const Vec3 y{0, 1, 0};
@@ -120,6 +128,9 @@ public:
                              {"count", values.size() / static_cast<std::size_t>(components)},
                              {"type", type}});
     }
+
+    /// A buffer view over raw bytes (an embedded image).
+    int bytes_view(const std::vector<std::uint8_t>& data) { return add_view(data.data(), data.size(), 0); }
 
     const std::vector<std::uint8_t>& bytes() const { return bin_; }
 
@@ -229,7 +240,7 @@ std::vector<std::uint8_t> make_glb() {
     for (std::size_t p = 0; p < d.parts.size(); ++p) {
         const Part& part = d.parts[p];
         const Vec3 origin = rest_global(d, part.joint);
-        std::vector<float> positions, normals, weights;
+        std::vector<float> positions, normals, weights, texcoords;
         std::vector<std::uint16_t> joints, indices;
         for (int axis = 0; axis < 3; ++axis) {
             for (int sign : {1, -1}) {
@@ -249,6 +260,8 @@ std::vector<std::uint8_t> make_glb() {
                     double n[3] = {0, 0, 0};
                     n[axis] = sign;
                     push(normals, {n[0], n[1], n[2]});
+                    texcoords.push_back(static_cast<float>(cu));
+                    texcoords.push_back(static_cast<float>(1 - cv));
                     const bool blended = part.blend_joint >= 0 && local[1] == part.min.y;
                     joints.insert(joints.end(),
                                   {static_cast<std::uint16_t>(part.joint),
@@ -261,6 +274,7 @@ std::vector<std::uint8_t> make_glb() {
         ordered_json attributes;
         attributes["POSITION"] = buffer.floats(positions, 3, "VEC3", true, kArrayBuffer);
         attributes["NORMAL"] = buffer.floats(normals, 3, "VEC3", false, kArrayBuffer);
+        if (part.texture >= 0) attributes["TEXCOORD_0"] = buffer.floats(texcoords, 2, "VEC2", false, kArrayBuffer);
         attributes["JOINTS_0"] = buffer.u16(joints, 4, "VEC4", kArrayBuffer);
         attributes["WEIGHTS_0"] = buffer.floats(weights, 4, "VEC4", false, kArrayBuffer);
         const int index_accessor = buffer.u16(indices, 1, "SCALAR", kElementArrayBuffer);
@@ -269,14 +283,29 @@ std::vector<std::uint8_t> make_glb() {
                               {"material", p},
                               {"mode", 4},
                               {"extras", {{"part", part.name}}}});
-        materials.push_back({{"name", part.name},
-                             {"pbrMetallicRoughness",
-                              {{"baseColorFactor", {part.colour[0], part.colour[1], part.colour[2], 1.0f}},
-                               {"metallicFactor", 0.0},
-                               {"roughnessFactor", 1.0}}}});
+        ordered_json pbr = {{"baseColorFactor", {part.colour[0], part.colour[1], part.colour[2], 1.0f}},
+                            {"metallicFactor", 0.0},
+                            {"roughnessFactor", 1.0}};
+        if (part.texture >= 0) pbr["baseColorTexture"] = {{"index", part.texture}};
+        materials.push_back({{"name", part.name}, {"pbrMetallicRoughness", pbr}});
     }
     root["meshes"] = {{{"name", "figure"}, {"primitives", primitives}}};
     root["materials"] = materials;
+    if (!d.textures.empty()) {
+        // Nearest filtering (9728), clamp to edge (33071).
+        root["samplers"] = {{{"magFilter", 9728}, {"minFilter", 9728}, {"wrapS", 33071}, {"wrapT", 33071}}};
+        ordered_json images = ordered_json::array();
+        ordered_json textures = ordered_json::array();
+        for (std::size_t t = 0; t < d.textures.size(); ++t) {
+            const std::vector<std::uint8_t> png = encode_png(d.textures[t]);
+            images.push_back({{"name", "texture" + std::to_string(t)},
+                              {"bufferView", buffer.bytes_view(png)},
+                              {"mimeType", "image/png"}});
+            textures.push_back({{"sampler", 0}, {"source", t}});
+        }
+        root["images"] = images;
+        root["textures"] = textures;
+    }
 
     ordered_json animations = ordered_json::array();
     for (const Animation& animation : d.animations) {

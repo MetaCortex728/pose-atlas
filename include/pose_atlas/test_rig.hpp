@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "pose_atlas/image.hpp"
 #include "pose_atlas/math.hpp"
 
 namespace pose_atlas::test_rig {
@@ -33,8 +34,14 @@ struct Part {
     int joint = 0;
     Vec3 min;
     Vec3 max;
-    std::array<float, 3> colour{};  // linear RGB base colour
+    std::array<float, 3> colour{};  // linear RGB base colour factor
     int blend_joint = -1;
+    /// Index into Description::textures for the base colour texture, or -1.
+    /// Each face of a textured box maps the whole texture. For a face normal
+    /// to axis k, u runs from 0 to 1 along axis (k + 1) mod 3 and v from 1 to
+    /// 0 along axis (k + 2) mod 3, so on the +Z face u = 0 is at -X (the
+    /// figure's right) and v = 0 at the top.
+    int texture = -1;
 };
 
 /// Rotation about a fixed axis through the joint, linear in angle between
@@ -62,11 +69,14 @@ struct Animation {
 struct Description {
     std::vector<Joint> joints;
     std::vector<Part> parts;
+    /// Generated base colour textures (sRGB, opaque), embedded as PNG and
+    /// sampled with nearest filtering and clamp-to-edge wrapping.
+    std::vector<Image> textures;
     std::vector<Animation> animations;
 };
 
 /// The figure. Animations: "idle" (2 s) and "run" (0.8 s), both loops whose
-/// last key equals the first.
+/// last key equals the first. The torso carries a 2x2 checker texture.
 const Description& description();
 
 /// The figure as GLB bytes. Deterministic: the same bytes on every call and

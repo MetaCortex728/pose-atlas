@@ -9,9 +9,30 @@
 #include <string>
 #include <vector>
 
+#include "pose_atlas/image.hpp"
 #include "pose_atlas/math.hpp"
 
 namespace pose_atlas {
+
+/// glTF sampler wrap modes.
+enum class Wrap { Repeat, ClampToEdge, MirroredRepeat };
+
+/// A glTF texture with its decoded image. `image` holds the file's 8-bit
+/// RGBA: colour sRGB-encoded (base colour textures are sRGB in glTF), alpha
+/// linear. `id` is unique per texture per load (copies of a model share it)
+/// and lets the renderer keep the image uploaded; treat the pixels as
+/// immutable.
+struct Texture {
+    std::string name;
+    Image image;
+    Wrap wrap_s = Wrap::Repeat;
+    Wrap wrap_t = Wrap::Repeat;
+    std::uint64_t id = 0;
+};
+
+/// glTF material alpha modes. Opaque and Blend are drawn opaque; Mask
+/// discards fragments whose alpha is below the cutoff.
+enum class AlphaMode { Opaque, Mask, Blend };
 
 /// Triangle list in the mesh's own coordinates (the bind pose for skinned
 /// meshes). joints/weights are empty for meshes without a skin.
@@ -23,6 +44,13 @@ struct Primitive {
     std::vector<std::uint32_t> indices;  // three per triangle
     std::string material;
     std::array<float, 4> base_colour = {1.0f, 1.0f, 1.0f, 1.0f};  // linear RGBA
+    /// pbrMetallicRoughness.baseColorTexture: index into Model::textures, or
+    /// -1. `texcoords` (one per position) are the texture's TEXCOORD set with
+    /// KHR_texture_transform already applied; empty without a texture.
+    int base_colour_texture = -1;
+    std::vector<std::array<float, 2>> texcoords;
+    AlphaMode alpha_mode = AlphaMode::Opaque;
+    float alpha_cutoff = 0.5f;
 };
 
 struct Mesh {
@@ -83,6 +111,7 @@ struct Model {
     std::vector<Mesh> meshes;
     std::vector<Skin> skins;
     std::vector<Animation> animations;
+    std::vector<Texture> textures;  // only those used as base colour textures
 
     /// Index of a node or animation by name; -1 when absent.
     int find_node(const std::string& name) const;
