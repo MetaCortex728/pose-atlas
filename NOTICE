@@ -20,3 +20,9 @@ licence.
   MIT licence, third_party/cgltf/LICENSE.
   cgltf.h is an unmodified copy of the header from the v1.15 release;
   cgltf_impl.c only compiles its implementation.
+
+- stb_image 2.30 and stb_image_write 1.16 by Sean Barrett,
+  https://github.com/nothings/stb (commit d14d46f6b44456eb88beac58cba833a4135d4c89)
+  MIT licence or public domain, at your choice; third_party/stb/LICENSE.
+  stb_image.h and stb_image_write.h are unmodified copies; stb_impl.c only
+  compiles their PNG and zlib parts.

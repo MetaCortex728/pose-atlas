@@ -45,13 +45,21 @@ endif()
 
 add_subdirectory(third_party)
 
+# Headless rendering: OpenGL through EGL (glvnd's libOpenGL and libEGL; Mesa
+# provides the software device at run time).
+set(OpenGL_GL_PREFERENCE GLVND)
+find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
+
 # Core library.
 add_library(pose_atlas STATIC
     src/camera.cpp
     src/gltf_loader.cpp
+    src/image.cpp
     src/math.cpp
     src/pose.cpp
     src/profile.cpp
+    src/render.cpp
+    src/resample.cpp
     src/sampling.cpp
     src/test_rig.cpp
     src/version.cpp)
@@ -62,7 +70,8 @@ target_compile_definitions(pose_atlas PRIVATE
     POSE_ATLAS_VERSION_STRING="${PROJECT_VERSION}")
 target_link_libraries(pose_atlas
     PRIVATE $<BUILD_INTERFACE:pose_atlas_json> $<BUILD_INTERFACE:pose_atlas_cgltf>
-        $<BUILD_INTERFACE:pose_atlas_options>)
+        $<BUILD_INTERFACE:pose_atlas_stb> $<BUILD_INTERFACE:pose_atlas_options>
+        OpenGL::OpenGL OpenGL::EGL)
 
 if(POSE_ATLAS_BUILD_APPS)
     add_subdirectory(apps)

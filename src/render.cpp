@@ -1,0 +1,319 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "pose_atlas/render.hpp"
+
+#include <algorithm>
+#include <cstring>
+
+#include <nlohmann/json.hpp>
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#define GL_GLEXT_PROTOTYPES
+#include <GL/glcorearb.h>
+
+namespace pose_atlas {
+
+namespace {
+
+constexpr const char* kVertexShader = R"(#version 330 core
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 colour;
+uniform mat4 view_projection;
+out vec3 region_colour;
+void main() {
+    gl_Position = view_projection * vec4(position, 1.0);
+    region_colour = colour;
+}
+)";
+
+// Flat region colour, linear light, opaque (premultiplied trivially).
+constexpr const char* kFragmentShader = R"(#version 330 core
+in vec3 region_colour;
+out vec4 fragment;
+void main() {
+    fragment = vec4(region_colour, 1.0);
+}
+)";
+
+std::string egl_error(const char* what) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof buffer, " (EGL error 0x%04x)", static_cast<unsigned>(eglGetError()));
+    return std::string(what) + buffer;
+}
+
+GLuint compile(GLenum type, const char* source) {
+    const GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint ok = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    if (ok != GL_TRUE) {
+        char log[1024] = {};
+        glGetShaderInfoLog(shader, sizeof log, nullptr, log);
+        glDeleteShader(shader);
+        throw RenderError(std::string("shader compilation failed: ") + log);
+    }
+    return shader;
+}
+
+bool contains(const std::vector<std::string>& names, const std::string& name) {
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+}  // namespace
+
+std::string render_settings_json(const RenderSettings& settings) {
+    nlohmann::ordered_json j;
+    j["style"] = kRenderStyleName;
+    j["outline"] = settings.style.outline;
+    char colour[8];
+    std::snprintf(colour, sizeof colour, "#%02x%02x%02x", settings.style.outline_colour[0],
+                  settings.style.outline_colour[1], settings.style.outline_colour[2]);
+    j["outline_colour"] = colour;
+    j["only_materials"] = settings.only_materials;
+    j["hidden_materials"] = settings.hidden_materials;
+    return j.dump();
+}
+
+struct Renderer::State {
+    EGLDisplay display = EGL_NO_DISPLAY;
+    EGLContext context = EGL_NO_CONTEXT;
+    std::string description;
+    GLuint program = 0;
+    GLint view_projection = -1;
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint fbo = 0;
+    GLuint colour = 0;
+    GLuint depth = 0;
+    int size = 0;  // current target size
+
+    void make_current() const {
+        if (eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context) != EGL_TRUE) {
+            throw RenderError(egl_error("eglMakeCurrent failed"));
+        }
+    }
+
+    void ensure_target(int pixels) {
+        if (pixels == size) return;
+        GLint max_size = 0;
+        glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_size);
+        if (pixels > max_size) {
+            throw RenderError("render target of " + std::to_string(pixels) + " pixels exceeds the maximum of " +
+                              std::to_string(max_size) + "; lower cell_pixels or supersampling");
+        }
+        if (fbo == 0) {
+            glGenFramebuffers(1, &fbo);
+            glGenRenderbuffers(1, &colour);
+            glGenRenderbuffers(1, &depth);
+        }
+        glBindRenderbuffer(GL_RENDERBUFFER, colour);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA32F, pixels, pixels);
+        glBindRenderbuffer(GL_RENDERBUFFER, depth);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, pixels, pixels);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            throw RenderError("framebuffer incomplete");
+        }
+        size = pixels;
+    }
+};
+
+Renderer::Renderer() : state_(std::make_unique<State>()) {
+    // Pick Mesa's software device explicitly: the same rasteriser on every
+    // machine, with or without a GPU.
+    const auto query_devices =
+        reinterpret_cast<PFNEGLQUERYDEVICESEXTPROC>(eglGetProcAddress("eglQueryDevicesEXT"));
+    const auto query_device_string =
+        reinterpret_cast<PFNEGLQUERYDEVICESTRINGEXTPROC>(eglGetProcAddress("eglQueryDeviceStringEXT"));
+    const auto get_platform_display =
+        reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
+    if (query_devices == nullptr || query_device_string == nullptr || get_platform_display == nullptr) {
+        throw RenderError("EGL lacks device enumeration (EGL_EXT_device_enumeration, EGL_EXT_platform_device)");
+    }
+    EGLDeviceEXT devices[16];
+    EGLint count = 0;
+    if (query_devices(16, devices, &count) != EGL_TRUE) {
+        throw RenderError(egl_error("eglQueryDevicesEXT failed; is Mesa's EGL installed?"));
+    }
+    EGLDeviceEXT software = nullptr;
+    for (EGLint i = 0; i < count && software == nullptr; ++i) {
+        const char* extensions = query_device_string(devices[i], EGL_EXTENSIONS);
+        if (extensions != nullptr && std::strstr(extensions, "EGL_MESA_device_software") != nullptr) {
+            software = devices[i];
+        }
+    }
+    if (software == nullptr) {
+        throw RenderError("no EGL software device (EGL_MESA_device_software); install Mesa's EGL and DRI drivers");
+    }
+    State& s = *state_;
+    s.display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, software, nullptr);
+    EGLint major = 0, minor = 0;
+    if (s.display == EGL_NO_DISPLAY || eglInitialize(s.display, &major, &minor) != EGL_TRUE) {
+        throw RenderError(egl_error("cannot initialise the EGL display"));
+    }
+    if (eglBindAPI(EGL_OPENGL_API) != EGL_TRUE) {
+        throw RenderError(egl_error("eglBindAPI(OpenGL) failed"));
+    }
+    const EGLint attributes[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3,
+                                 EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT, EGL_NONE};
+    s.context = eglCreateContext(s.display, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attributes);
+    if (s.context == EGL_NO_CONTEXT) {
+        throw RenderError(egl_error("cannot create an OpenGL 3.3 core context"));
+    }
+    try {
+        s.make_current();
+        s.description = std::string(reinterpret_cast<const char*>(glGetString(GL_RENDERER))) + "; " +
+                        reinterpret_cast<const char*>(glGetString(GL_VERSION));
+        const GLuint vs = compile(GL_VERTEX_SHADER, kVertexShader);
+        const GLuint fs = compile(GL_FRAGMENT_SHADER, kFragmentShader);
+        s.program = glCreateProgram();
+        glAttachShader(s.program, vs);
+        glAttachShader(s.program, fs);
+        glLinkProgram(s.program);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        GLint ok = GL_FALSE;
+        glGetProgramiv(s.program, GL_LINK_STATUS, &ok);
+        if (ok != GL_TRUE) throw RenderError("shader program link failed");
+        s.view_projection = glGetUniformLocation(s.program, "view_projection");
+        glGenVertexArrays(1, &s.vao);
+        glGenBuffers(1, &s.vbo);
+    } catch (...) {
+        eglMakeCurrent(s.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroyContext(s.display, s.context);
+        throw;
+    }
+}
+
+Renderer::~Renderer() {
+    State& s = *state_;
+    if (eglMakeCurrent(s.display, EGL_NO_SURFACE, EGL_NO_SURFACE, s.context) == EGL_TRUE) {
+        if (s.fbo != 0) {
+            glDeleteFramebuffers(1, &s.fbo);
+            glDeleteRenderbuffers(1, &s.colour);
+            glDeleteRenderbuffers(1, &s.depth);
+        }
+        glDeleteBuffers(1, &s.vbo);
+        glDeleteVertexArrays(1, &s.vao);
+        glDeleteProgram(s.program);
+    }
+    // The display is shared by every renderer on the device (EGL returns the
+    // same handle), so it stays initialised; only this context goes.
+    eglMakeCurrent(s.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglDestroyContext(s.display, s.context);
+}
+
+const std::string& Renderer::description() const { return state_->description; }
+
+LinearImage Renderer::render_linear(const Model& model, const Pose& pose, const Profile& profile,
+                                    const CameraGuide& guide, const RenderSettings& settings) {
+    State& s = *state_;
+    s.make_current();
+    const int pixels = profile.cell_pixels * profile.supersampling;
+    s.ensure_target(pixels);
+
+    // Triangle soup: position (3) and linear colour (3) per vertex.
+    std::vector<float> vertices;
+    for (std::size_t n = 0; n < model.nodes.size(); ++n) {
+        const Node& node = model.nodes[n];
+        if (node.mesh < 0) continue;
+        const Mesh& mesh = model.meshes[static_cast<std::size_t>(node.mesh)];
+        for (std::size_t p = 0; p < mesh.primitives.size(); ++p) {
+            const Primitive& primitive = mesh.primitives[p];
+            if (!settings.only_materials.empty() && !contains(settings.only_materials, primitive.material)) continue;
+            if (contains(settings.hidden_materials, primitive.material)) continue;
+            const PosedPrimitive posed =
+                pose_primitive(model, static_cast<int>(n), static_cast<int>(p), pose);
+            for (std::uint32_t index : primitive.indices) {
+                const Vec3& v = posed.positions.at(index);
+                vertices.insert(vertices.end(), {static_cast<float>(v.x), static_cast<float>(v.y),
+                                                 static_cast<float>(v.z), primitive.base_colour[0],
+                                                 primitive.base_colour[1], primitive.base_colour[2]});
+            }
+        }
+    }
+
+    // View: camera axes right, up, toward (it looks along -toward) at the
+    // guide's position. Orthographic: the cell spans ortho_scale_m in both
+    // directions; depth from 0 to twice the camera distance.
+    const double half = guide.ortho_scale_m / 2;
+    const double near_m = 0.0;
+    const double far_m = 2 * profile.camera_distance_m;
+    const Vec3 axes[3] = {guide.right, guide.up, guide.toward};
+    double m[16] = {};  // column-major
+    for (int row = 0; row < 3; ++row) {
+        const Vec3& a = axes[row];
+        const double t = -dot(a, guide.position);
+        double scale = 1.0 / half, offset = 0.0;
+        if (row == 2) {
+            // z_ndc = (-2 z_eye - (far + near)) / (far - near)
+            scale = -2.0 / (far_m - near_m);
+            offset = -(far_m + near_m) / (far_m - near_m);
+        }
+        m[0 * 4 + row] = a.x * scale;
+        m[1 * 4 + row] = a.y * scale;
+        m[2 * 4 + row] = a.z * scale;
+        m[3 * 4 + row] = t * scale + offset;
+    }
+    m[15] = 1.0;
+    float mf[16];
+    for (int i = 0; i < 16; ++i) mf[i] = static_cast<float>(m[i]);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, s.fbo);
+    glViewport(0, 0, pixels, pixels);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DITHER);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (!vertices.empty()) {
+        glUseProgram(s.program);
+        glUniformMatrix4fv(s.view_projection, 1, GL_FALSE, mf);
+        glBindVertexArray(s.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, s.vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(float)), vertices.data(),
+                     GL_STREAM_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                              reinterpret_cast<const void*>(3 * sizeof(float)));
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size() / 6));
+    }
+
+    LinearImage image;
+    image.width = pixels;
+    image.height = pixels;
+    image.rgba.resize(static_cast<std::size_t>(pixels) * static_cast<std::size_t>(pixels) * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, pixels, pixels, GL_RGBA, GL_FLOAT, image.rgba.data());
+    const GLenum error = glGetError();
+    if (error != GL_NO_ERROR) throw RenderError("OpenGL error " + std::to_string(error) + " while rendering");
+    // GL rows run bottom to top; flip to top to bottom.
+    const std::size_t row = static_cast<std::size_t>(pixels) * 4;
+    std::vector<float> swap(row);
+    for (std::size_t y = 0; y < static_cast<std::size_t>(pixels) / 2; ++y) {
+        float* a = image.rgba.data() + y * row;
+        float* b = image.rgba.data() + (static_cast<std::size_t>(pixels) - 1 - y) * row;
+        std::memcpy(swap.data(), a, row * sizeof(float));
+        std::memcpy(a, b, row * sizeof(float));
+        std::memcpy(b, swap.data(), row * sizeof(float));
+    }
+    return image;
+}
+
+Image Renderer::render(const Model& model, const Pose& pose, const Profile& profile, const CameraGuide& guide,
+                       const RenderSettings& settings) {
+    Image cell = downsample(render_linear(model, pose, profile, guide, settings), profile.supersampling,
+                            profile.resampling_filter);
+    if (settings.style.outline) apply_outline(cell, settings.style.outline_colour);
+    return cell;
+}
+
+}  // namespace pose_atlas

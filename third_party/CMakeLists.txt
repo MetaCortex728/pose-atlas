@@ -14,3 +14,9 @@ target_include_directories(pose_atlas_cgltf SYSTEM PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cgltf)
 target_link_libraries(pose_atlas_cgltf PRIVATE pose_atlas_sanitize)
 set_target_properties(pose_atlas_cgltf PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+
+add_library(pose_atlas_stb STATIC stb/stb_impl.c)
+target_include_directories(pose_atlas_stb SYSTEM PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/stb)
+target_link_libraries(pose_atlas_stb PRIVATE pose_atlas_sanitize)
+set_target_properties(pose_atlas_stb PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)

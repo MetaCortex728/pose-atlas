@@ -12,6 +12,10 @@ RUN apt-get update \
         g++ \
         gcc \
         git \
+        libegl-dev \
+        libegl-mesa0 \
+        libgl1-mesa-dri \
+        libopengl-dev \
         ninja-build \
         python3 \
     && rm -rf /var/lib/apt/lists/*

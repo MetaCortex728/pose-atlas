@@ -52,7 +52,7 @@ TEST_CASE("profile: the shipped quarter-view profile carries the prototype's cam
     CHECK(to_string(p.world_up) == prototype["world_up"].get<std::string>());
     CHECK(prototype["screen_headings"] == json({"e", "ne", "n", "nw", "w", "sw", "s", "se"}));
     CHECK(p.supersampling == 4);
-    CHECK(p.resampling_filter == ResampleFilter::Box);
+    CHECK(p.resampling_filter == ResampleFilter::Mitchell);
     CHECK(p.zoom_set == std::vector<int>{1, 2, 3});
     CHECK(p.cell_span_m() == doctest::Approx(2.7733333333));
 }
@@ -104,7 +104,7 @@ TEST_CASE("profile: errors name the source, the field and the problem") {
     doc = base_json();
     doc["resampling_filter"] = "bicubic";
     CHECK(error_of(doc).find("resampling_filter: unknown value \"bicubic\" (expected one of box, "
-                             "triangle, lanczos3)") != std::string::npos);
+                             "triangle, mitchell, lanczos3)") != std::string::npos);
 
     doc = base_json();
     doc["cell_pixels"] = 256.5;

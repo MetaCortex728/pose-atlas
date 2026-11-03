@@ -28,9 +28,10 @@ constexpr std::array<std::pair<Axis, const char*>, 6> kAxisNames = {{{Axis::PosX
                                                                      {Axis::PosZ, "+Z"},
                                                                      {Axis::NegZ, "-Z"}}};
 
-constexpr std::array<std::pair<ResampleFilter, const char*>, 3> kFilterNames = {
+constexpr std::array<std::pair<ResampleFilter, const char*>, 4> kFilterNames = {
     {{ResampleFilter::Box, "box"},
      {ResampleFilter::Triangle, "triangle"},
+     {ResampleFilter::Mitchell, "mitchell"},
      {ResampleFilter::Lanczos3, "lanczos3"}}};
 
 const std::set<std::string>& known_keys() {

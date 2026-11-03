@@ -26,7 +26,8 @@ inline constexpr std::array<const char*, 8> kScreenHeadings = {"e", "ne", "n", "
 enum class Axis { PosX, NegX, PosY, NegY, PosZ, NegZ };
 
 /// Filter used when downsampling the supersampled render to the cell.
-enum class ResampleFilter { Box, Triangle, Lanczos3 };
+/// Mitchell is the Mitchell-Netravali cubic with B = C = 1/3.
+enum class ResampleFilter { Box, Triangle, Mitchell, Lanczos3 };
 
 struct Profile {
     std::string id;
@@ -45,7 +46,7 @@ struct Profile {
     double meters_per_pixel = 0.0;
     // Rendering and output.
     int supersampling = 4;
-    ResampleFilter resampling_filter = ResampleFilter::Box;
+    ResampleFilter resampling_filter = ResampleFilter::Mitchell;
     std::vector<int> zoom_set = {1};
 
     /// Side of the cell in metres (the orthographic scale).

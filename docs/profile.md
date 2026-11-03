@@ -18,7 +18,7 @@ Check a profile with `pose-atlas profile check <file>`; print the eight camera g
 | `ground_pivot_pixels` | `[x, y]` pixel of the model origin in the cell, Y down, strictly inside the cell. |
 | `meters_per_pixel` | Physical size of one output pixel. The cell spans `cell_pixels × meters_per_pixel` metres. |
 | `supersampling` | Render at this many times the cell resolution before downsampling, 1 to 16. |
-| `resampling_filter` | Downsampling filter: `box`, `triangle` or `lanczos3`. |
+| `resampling_filter` | Downsampling filter: `box`, `triangle`, `mitchell` (Mitchell–Netravali, B = C = 1/3; the default) or `lanczos3`. Applied to premultiplied alpha. |
 | `zoom_set` | Strictly increasing integer display zooms (1 to 16) for review output. |
 
 Unknown fields are errors, so typos do not pass silently. All problems are reported at once, each as `<file>: <field>: <problem>`.
