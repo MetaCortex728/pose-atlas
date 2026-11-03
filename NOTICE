@@ -1,0 +1,12 @@
+pose-atlas
+Copyright 2026 the pose-atlas authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes the following third-party code under third_party/. Each component
+keeps its own licence file next to its files and is distributed under that
+licence.
+
+- doctest 2.5.3 by Viktor Kirilov, https://github.com/doctest/doctest
+  MIT licence, third_party/doctest/LICENSE.txt. Unit tests only.
+  doctest.h is an unmodified copy of the upstream single header.

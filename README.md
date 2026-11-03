@@ -7,3 +7,17 @@ A tool that turns a rigged, animated 3D character into engine-ready sprite atlas
 Han built the first version in October 2026 for his own Unreal game, with OpenAI Codex as a coding assistant and without version control: Blender and Python scripts that render a character from a fixed quarter view, an Aseprite bridge that imports the frames as an editable file with tags and a pivot slice, and validators for the resulting atlas and its metadata. Those scripts are dated 19 to 21 October 2026.
 
 `prototype/` keeps the parts that do not depend on Blender, unchanged except for one default tool path: the projection profile and its loader (`quarter-view-profile.json`, `dan_projection.py`), the atlas and metadata validator and its tests (`check-pose-pipeline.py`, `test-pose-validator.py`), the Aseprite import bridge (`import-pose-proxy.lua`) and the pipeline runner (`run-pose-pipeline.ps1`). The Blender render script is not included: it uses Blender's Python API, which would bring Blender's GPL into this repository, and the new renderer replaces it. The prototype's tests and runner refer to game assets that are not part of this repository, so they document the original pipeline rather than run here.
+
+## Build and test
+
+You need CMake 3.21 or newer, Ninja, and GCC or Clang with C++17. All other dependencies are vendored under `third_party/` (see [NOTICE](NOTICE)).
+
+```sh
+cmake --preset default && cmake --build --preset default && ctest --preset default
+```
+
+Presets: `default` (GCC), `clang`, `asan` (GCC with AddressSanitizer and UndefinedBehaviorSanitizer), and `ci-default`, `ci-clang`, `ci-asan`, the same with warnings as errors, which CI runs on Linux. The build directory is `build/<preset>`; the tool is `build/<preset>/apps/pose-atlas`. The `Dockerfile` provides the Ubuntu 22.04 toolchain that CI uses.
+
+## Licence
+
+Licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
