@@ -147,6 +147,16 @@ TEST_CASE("cli: render the rig's two actions and validate them") {
     CHECK(locked.exit_code == 0);
     CHECK(locked.output.find("palette: before_after, 16 colours: ") != std::string::npos);
     CHECK(locked.output.find(" 0 off-palette in the output") != std::string::npos);
+    CHECK(run_cli("validate \"" + palette_out + "\"").exit_code == 0);
+    // Snapping only before the downsample is not palette-locked: the export
+    // is written, but fails validation.
+    const auto unlocked = run_cli(palette_base + " --palette-stage before");
+    CHECK(unlocked.exit_code == 1);
+    CHECK(unlocked.output.find("palette: before, 16 colours: ") != std::string::npos);
+    CHECK(unlocked.output.find("validate: palette lock: atlas pixel (") != std::string::npos);
+    const auto unlocked_check = run_cli("validate \"" + palette_out + "\"");
+    CHECK(unlocked_check.exit_code == 1);
+    CHECK(unlocked_check.output.find("opaque pixels off the palette") != std::string::npos);
     const auto bad_palette = run_cli(base + " --palette /nonexistent/palette.json");
     CHECK(bad_palette.exit_code == 1);
     CHECK(bad_palette.output.find("/nonexistent/palette.json: cannot open file") != std::string::npos);

@@ -393,6 +393,34 @@ TEST_CASE("atlas: palette report, before versus before_after") {
     CHECK(report["total"]["off_palette_before_snap"] == b.off_palette_before_snap);
     CHECK(report["total"]["partial_alpha"] == b.partial_alpha);
     CHECK(report["total"]["off_palette_output"] == b.off_palette_output);
+
+    // The palette-lock rule of validate: before fails it, before_after passes.
+    const ValidationReport before_check = validate_atlas(dir);
+    CHECK_FALSE(before_check.passed());
+    CHECK(has_problem(before_check, "palette lock: atlas pixel ("));
+    CHECK(has_problem(before_check, "palette lock: " + std::to_string(b.off_palette_output) +
+                                        " opaque pixels off the palette and 0 pixels with partial alpha"));
+    int listed = 0;
+    for (const auto& p : before_check.problems) listed += p.find("palette lock: atlas pixel") == 0 ? 1 : 0;
+    CHECK(listed == 5);
+    const std::string both_dir = fresh_dir("atlas_palette_both");
+    export_atlas(both, both_dir);
+    const ValidationReport both_check = validate_atlas(both_dir);
+    for (const auto& p : both_check.problems) MESSAGE(p);
+    CHECK(both_check.passed());
+    // A contract whose palette lost a colour: wrong hash, and offenders.
+    json contract = read_json(both_dir + "/pose-contract.json");
+    contract["sources"]["palette"]["colors"].erase(2);
+    write_text_file(both_dir + "/pose-contract.json", contract.dump());
+    const ValidationReport shrunk = validate_atlas(both_dir);
+    CHECK(has_problem(shrunk, "sources.palette.sha256 is not the hash of its colours"));
+    CHECK(has_problem(shrunk, std::string(" in frame ")));
+    CHECK(has_problem(shrunk, hex_colour(job.settings.palette[2]) + " is not in the palette"));
+    // Partial alpha is reported too.
+    Atlas soft = both;
+    soft.cells[3].pixel(40, 40)[3] = 128;
+    export_atlas(soft, both_dir);
+    CHECK(has_problem(validate_atlas(both_dir), "alpha 128 is neither 0 nor 255"));
     job.settings.palette_stage = PaletteStage::Before;
     const Atlas cached = render_atlas(renderer, job, cache);
     for (const RenderRecord& r : cached.renders) CHECK(r.reused);

@@ -21,7 +21,9 @@
 // renderer's filtered edges have partial alpha by design).
 //
 // Added: format and version of the contract, file hashes, consistency of the
-// contract with its embedded profile.
+// contract with its embedded profile, and, when the contract names a palette,
+// the palette lock: every opaque pixel in the palette (plus the outline
+// colour), every alpha 0 or 255.
 //
 // The .aseprite file takes the place of the prototype's raw frame files and
 // its Aseprite import script: every frame's base-layer cel must hold exactly
@@ -38,6 +40,7 @@
 
 #include "pose_atlas/atlas.hpp"
 #include "pose_atlas/camera.hpp"
+#include "pose_atlas/palette.hpp"
 
 namespace pose_atlas {
 
@@ -184,6 +187,7 @@ private:
                     std::to_string(size * columns) + "x" + std::to_string(size * views));
             return;
         }
+        check_palette_lock(contract, atlas, size, columns);
         if (frames.size() != total || items.size() != total) return;
         check_aseprite(contract, profile, columns, views);
         std::vector<std::string> cell_hashes;
@@ -251,6 +255,65 @@ private:
                                                      " shows one image in view " +
                                                      kScreenHeadings[static_cast<std::size_t>(row)]);
             }
+        }
+    }
+
+    // When the contract names a palette: every opaque pixel is a palette
+    // colour (or the outline colour, when the outline is on) and every alpha
+    // is 0 or 255. Reports the first few offenders and the totals.
+    void check_palette_lock(const json& contract, const Image& atlas, int size, int columns) {
+        const json& sources = contract.at("sources");
+        if (!sources.contains("palette")) return;
+        const json& palette = sources.at("palette");
+        std::vector<Rgb8> colours;
+        for (const json& item : palette.at("colors")) {
+            Rgb8 c{};
+            if (!item.is_string() || !parse_hex_colour(item.get<std::string>(), c)) {
+                problem("contract: sources.palette.colors holds " + item.dump() + ", not \"#rrggbb\"");
+                return;
+            }
+            colours.push_back(c);
+        }
+        expect(palette.at("sha256") == palette_sha256(colours),
+               "contract: sources.palette.sha256 is not the hash of its colours");
+        const json& settings = sources.at("render_settings").at("values");
+        expect(settings.value("palette_sha256", json()) == palette.at("sha256"),
+               "contract: the render settings' palette_sha256 differs from sources.palette");
+        std::vector<Rgb8> allowed = colours;
+        std::string extra;
+        if (settings.value("outline", false)) {
+            Rgb8 outline{};
+            if (parse_hex_colour(settings.value("outline_colour", ""), outline)) {
+                allowed.push_back(outline);
+                extra = " or the outline colour " + hex_colour(outline);
+            }
+        }
+        const PaletteMatcher matcher(allowed);
+        constexpr int kShown = 5;
+        std::int64_t off = 0, partial = 0;
+        int shown = 0;
+        for (int y = 0; y < atlas.height; ++y) {
+            for (int x = 0; x < atlas.width; ++x) {
+                const std::uint8_t* p = atlas.pixel(x, y);
+                std::string what;
+                if (p[3] != 0 && p[3] != 255) {
+                    ++partial;
+                    what = "alpha " + std::to_string(p[3]) + " is neither 0 nor 255";
+                } else if (p[3] == 255 && !matcher.contains({p[0], p[1], p[2]})) {
+                    ++off;
+                    what = hex_colour({p[0], p[1], p[2]}) + " is not in the palette" + extra;
+                }
+                if (what.empty() || shown >= kShown) continue;
+                ++shown;
+                const int column = x / size, row = y / size;
+                problem("palette lock: atlas pixel (" + std::to_string(x) + ", " + std::to_string(y) + ") in frame " +
+                        std::to_string(row * columns + column) + " at cell (" + std::to_string(x % size) + ", " +
+                        std::to_string(y % size) + "): " + what);
+            }
+        }
+        if (off + partial > 0) {
+            problem("palette lock: " + std::to_string(off) + " opaque pixels off the palette and " +
+                    std::to_string(partial) + " pixels with partial alpha in " + kAtlasPng);
         }
     }
 
