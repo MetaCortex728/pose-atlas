@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "dan-quarter-view-baseline-v1",
+  "status": "30-degree camera selected by user; motion and final pixel production pending",
+  "camera_selection": {
+    "approved": true,
+    "elevation_degrees": 30,
+    "reference_art": "exports/dan-village-playtest/locked-pose-guide/pixel-pose-021-v1.png",
+    "reference_sha256": "5590cc2da6c9de2ea6b803034622ca7306914ca1655601cb1aaf272886b783b0",
+    "scope": "Use the center candidate as the visual reference; no approval of all motion frames or generated angle accuracy."
+  },
+  "projection": "ORTHO",
+  "elevation_degrees": 30,
+  "base_azimuth_degrees": 45,
+  "camera_distance_m": 8,
+  "cell_pixels": 256,
+  "meters_per_pixel": 0.010833333333333334,
+  "ground_pivot_pixels": [128, 208],
+  "character_forward": "-Y",
+  "world_up": "+Z",
+  "screen_headings": ["e", "ne", "n", "nw", "w", "sw", "s", "se"],
+  "art_adjustment": {
+    "status": "center candidate selected; pose-specific manual observations recorded, anatomical ratios not inferred",
+    "landmark_reference": "assets/dan/appearance-landmarks-v1.json",
+    "guide_registration": "assets/dan/art-guide-registration-v1.json",
+    "landmark_ratios": null,
+    "global_xy_squeeze": false,
+    "lower_camera_to_fake_slenderness": false
+  }
+}
