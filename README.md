@@ -1,6 +1,8 @@
 # pose-atlas
 
-A tool that turns a rigged, animated 3D character into engine-ready sprite atlases: every action in eight independent views under one versioned camera profile, with checks and a review page. It is being built as a standalone C++17 program with its own renderer.
+A tool that turns a rigged, animated 3D character into engine-ready sprite atlases: every action in eight independent views under one versioned camera profile, with checks. It is being built as a standalone C++17 program with its own renderer.
+
+Status: the core pipeline (Stage 1 of the [roadmap](ROADMAP.md)) works, along with palette-locked output and hand corrections that survive re-renders. Colour from the approved illustration, motion diagnostics, a review page and effect baking are planned.
 
 ## Origin
 
