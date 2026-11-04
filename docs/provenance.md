@@ -8,14 +8,17 @@ The repository's first commit (`9c5fe40`, 3 November 2026) imports six of the Oc
 
 | Time (UTC) | Event | Source |
 |---|---|---|
-| 2026-10-19 05:58 | `render-pose-proxy.py` and `import-pose-proxy.lua` created | file creation time |
+| 2026-10-18 16:49 | The Codex session in which the pipeline is built begins | session record |
+| 2026-10-19 05:58 | `render-pose-proxy.py` and `import-pose-proxy.lua` created; first recorded run passes 8 s later | file creation time, session record |
 | 2026-10-19 05:59 | `run-pose-pipeline.ps1` and `check-pose-pipeline.py` created | file creation time |
 | 2026-10-19 06:02 | `PoseAtlas.h` and its tests created in the game's Unreal project | file creation time |
-| 2026-10-19 06:42 | First pipeline output written: proxy atlas, Aseprite file, metadata and pose contract | file creation time |
+| 2026-10-19 06:42 | First pipeline output kept: proxy atlas, Aseprite file, metadata and pose contract | file creation time, session record |
 | 2026-10-19 15:24 | `test-pose-validator.py` created | file creation time |
 | 2026-10-20 02:37 to 10:06 | Last changes to the bridge, runner, validator and its tests | file write time |
 | 2026-10-21 11:15 | `dan_projection.py` and the projection profile created | file creation time |
 | 2026-10-21 23:15 | Last change to the projection profile | file write time |
+| 2026-10-23 14:36 | Notion page on the same workflow last edited | Notion server |
+| 2026-10-29 19:30 | Programme invitation received | email |
 | 2026-11-03 | This repository's first commit imports six of these files | git |
 
 ## How the pipeline developed in October
@@ -84,10 +87,41 @@ Apart from the atlas reproduced above, these files stay out of the repository fo
 | `assets/prototypes/pose-locomotion/pose-proxy.json` | 2026-10-19 06:42:14 | 2026-10-19 06:42:14 | `11f64d89a1970189c73d999dec734d8826b56a802487d52d79c7553664974ddf` | Same run: Aseprite-style metadata. |
 | `assets/prototypes/pose-locomotion/pose-proxy.aseprite` | 2026-10-19 06:42:14 | 2026-10-19 06:42:14 | `5c3d30ea4baef15a20dccb9902bcc7602e72d11025cf82d4c61b3a9270f56fdb` | Same run: the Aseprite file. |
 
+## The assistant's session records
+
+OpenAI Codex keeps a local record of each session. Every file edit and command it ran is stored there with a timestamp. On 4 November 2026 the assistant read the session in which the pipeline was built (`01a13efd-4a4b-7283-a42c-728222aa7224`, from 18 October 16:49 UTC). Only entries before the invitation (29 October 2026, 19:30 UTC) were counted. It replayed every recorded edit to the seven pipeline files and hashed the result after each one. [`provenance/session-writes.json`](provenance/session-writes.json) lists all 57 edits and 17 recorded runs, with session line numbers and call ids. It holds no source code or conversation text.
+
+| File | First written | Last written before the invitation | Edits | Replayed content vs the original |
+|---|---|---|---|---|
+| `render-pose-proxy.py` | 2026-10-19 05:58:16.343 | 2026-10-20 03:29:43.178 | 11 | not compared (not in this repository) |
+| `import-pose-proxy.lua` | 2026-10-19 05:58:16.343 | 2026-10-20 02:37:25.612 | 9 | same SHA-256 |
+| `check-pose-pipeline.py` | 2026-10-19 05:59:54.772 | 2026-10-20 02:37:25.612 | 12 | same SHA-256 |
+| `run-pose-pipeline.ps1` | 2026-10-19 05:59:54.772 | 2026-10-20 02:37:25.612 | 12 | same SHA-256 as the original (the copy here changes one path) |
+| `test-pose-validator.py` | 2026-10-19 15:24:54.113 | 2026-10-20 10:06:32.229 | 9 | different: the replay of nine edits does not reproduce the final bytes; the original's last write time (10:06:32.518) is 0.3 s after the last recorded edit |
+| `dan_projection.py` | 2026-10-21 11:15:26.286 | 2026-10-21 11:15:26.286 | 1 | same SHA-256 |
+| `quarter-view-profile.json` | 2026-10-21 11:15:26.286 | 2026-10-21 23:15:15.942 | 3 | same SHA-256 |
+
+The recorded runs print the pipeline's own pass markers. The first, at 05:58:24, comes eight seconds after the first files were written:
+
+| Command recorded | Output recorded | Pass markers |
+|---|---|---|
+| 2026-10-19 05:58:16 | 05:58:24 | `POSE_RENDER_PASS` |
+| 2026-10-19 05:59:54 | 05:59:59 | `POSE_RENDER_PASS`, `POSE_ASEPRITE_IMPORT_PASS` |
+| 2026-10-19 06:42:07 | 06:42:14 | `POSE_RENDER_PASS`, `POSE_ASEPRITE_IMPORT_PASS` |
+| 2026-10-19 23:05:32 | 23:05:39 | `POSE_ASEPRITE_IMPORT_PASS` |
+| 2026-10-20 00:29:53 | 00:30:03 | `POSE_RENDER_PASS` |
+
+Two of these runs line up with the outputs above. The run that finished at 06:42:14 matches the first proxy atlas, created at 06:42:14. The run that finished at 23:05:39 matches the normal-map atlas, created at 23:05:38. The session records and the filesystem are separate records, and they agree to the second. All 17 runs are in the JSON.
+
+## A server-side timestamp
+
+A page in Han's Notion workspace, "From illustration to game-ready character", describes the same workflow: a 3D character either stays 3D in Unreal with a pixel-art look, or is rendered in Blender into pixel sprite sheets. Notion's servers report it as last edited at **2026-10-23 14:36:30 UTC**, before the invitation. Notion sets this time, not Han's PC. It shows that the workflow was being written up by then. It does not attest the bytes of any script, and Notion does not expose when the page was created. The page is private; it can be shown on request.
+
 ## What this shows, and what it does not
 
 - **The hashes show** that the files in `prototype/` are byte for byte the files in Han's game project. They do not show when those files were written.
-- **The times are filesystem metadata** on Han's PC, read on 4 November 2026. They agree with one another, and with the order in which the files depend on each other: the runner calls the render script, the bridge and the validator, and the first outputs appear about 44 minutes after the first scripts. But filesystem times can be changed, so they are not independent proof.
-- **Server-side timestamps:** none found yet for this project. When the original assistant session records are reviewed, the relevant excerpts will be added here with their timestamps.
+- **The session records show** each file being written, edited and run from 19 October onward. For six of the seven files, replaying the recorded edits reproduces the original byte for byte. They are local records on Han's PC: harder to fake consistently than a file time, but not independent of the PC.
+- **The filesystem times** agree with the session records to within a second, and with the order in which the files depend on each other. They are local too.
+- **The Notion timestamp** is set by a server. It is the only time on this page that Han's PC cannot set. It dates the workflow, not the scripts.
 
-The originals, the session records and a live comparison can be shown on request, for anyone who wants to check beyond this page.
+The originals, the full session records and a live comparison can be shown to anyone who wants to check beyond this page.
