@@ -6,7 +6,7 @@ Status: the core pipeline (Stage 1 of the [roadmap](ROADMAP.md)) works, along wi
 
 ## Origin
 
-Han built the first version in October 2026 for his own Unreal game, with OpenAI Codex as a coding assistant and without version control: Blender and Python scripts that render a character from a fixed quarter view, an Aseprite bridge that imports the frames as an editable file with tags and a pivot slice, and validators for the resulting atlas and its metadata. Those scripts are dated 19 to 21 October 2026.
+Han built the first version in October 2026 for his own Unreal game, with OpenAI Codex as a coding assistant and without version control: Blender and Python scripts that render a character from a fixed quarter view, an Aseprite bridge that imports the frames as an editable file with tags and a pivot slice, and validators for the resulting atlas and its metadata. Those scripts are dated 19 to 21 October 2026; [docs/provenance.md](docs/provenance.md) lists their dates and hashes, and the pipeline outputs from that time.
 
 `prototype/` keeps the parts that do not depend on Blender, unchanged except for one default tool path: the projection profile and its loader (`quarter-view-profile.json`, `dan_projection.py`), the atlas and metadata validator and its tests (`check-pose-pipeline.py`, `test-pose-validator.py`), the Aseprite import bridge (`import-pose-proxy.lua`) and the pipeline runner (`run-pose-pipeline.ps1`). The Blender render script is not included: it uses Blender's Python API, which would bring Blender's GPL into this repository, and the new renderer replaces it. The prototype's tests and runner refer to game assets that are not part of this repository, so they document the original pipeline rather than run here.
 
