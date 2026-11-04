@@ -1,0 +1,566 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "pose_atlas/atlas.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <map>
+#include <set>
+
+#include <nlohmann/json.hpp>
+
+#include "pose_atlas/camera.hpp"
+#include "pose_atlas/version.hpp"
+
+namespace pose_atlas {
+
+namespace {
+
+using nlohmann::ordered_json;
+
+std::string join_path(const std::string& directory, const std::string& name) {
+    if (directory.empty() || directory.back() == '/') return directory + name;
+    return directory + "/" + name;
+}
+
+std::string exact(double value) {
+    char buffer[40];
+    std::snprintf(buffer, sizeof buffer, "%.17g", value);
+    return buffer;
+}
+
+ordered_json rect(int x, int y, int w, int h) { return {{"x", x}, {"y", y}, {"w", w}, {"h", h}}; }
+
+ordered_json optional_number(const std::optional<double>& value) {
+    return value ? ordered_json(*value) : ordered_json(nullptr);
+}
+
+}  // namespace
+
+std::vector<int> frame_durations_ms(const SamplingPlan& plan) {
+    std::vector<int> out;
+    for (const Sample& s : plan.samples) {
+        if (!s.runtime_start_ms || !s.runtime_duration_ms) {
+            throw SamplingError("action \"" + plan.action +
+                                "\": the cadence gives no frame durations (a distance cadence needs a reference "
+                                "speed)");
+        }
+        const double start = std::round(*s.runtime_start_ms);
+        const double end = std::round(*s.runtime_start_ms + *s.runtime_duration_ms);
+        const double d = end - start;
+        if (!(d >= 1.0) || d > 65535.0) {
+            throw SamplingError("action \"" + plan.action + "\": pose " + std::to_string(s.pose_index) +
+                                " lasts " + exact(*s.runtime_duration_ms) +
+                                " ms, outside the 1 to 65535 ms an atlas frame can hold");
+        }
+        out.push_back(static_cast<int>(d));
+    }
+    return out;
+}
+
+long long source_time_us(double source_time_s) {
+    if (!std::isfinite(source_time_s) || std::fabs(source_time_s) > 9.0e12) {
+        throw AtlasError("source time " + exact(source_time_s) + " s cannot be quantised to microseconds");
+    }
+    return std::llround(source_time_s * 1e6);
+}
+
+std::string frame_key(const std::string& action, const std::string& view, double source_time_s) {
+    const long long us = source_time_us(source_time_s);
+    const unsigned long long magnitude = static_cast<unsigned long long>(us < 0 ? -us : us);
+    char buffer[48];
+    std::snprintf(buffer, sizeof buffer, "%s%llu.%06llu", us < 0 ? "-" : "", magnitude / 1000000ull,
+                  magnitude % 1000000ull);
+    return action + "." + view + "@" + buffer;
+}
+
+std::string frame_input_sha256(const std::string& model_sha256, const std::string& profile_sha256,
+                               const std::string& settings_sha256, const std::string& renderer,
+                               const std::string& action, const std::string& view, double source_time_s) {
+    std::string text = "pose-atlas frame input 1\n";
+    text += "model " + model_sha256 + "\n";
+    text += "profile " + profile_sha256 + "\n";
+    text += "settings " + settings_sha256 + "\n";
+    text += "renderer " + renderer + "\n";
+    text += "action " + action + "\n";
+    text += "view " + view + "\n";
+    text += "time " + exact(source_time_s) + "\n";
+    return sha256_hex(text);
+}
+
+std::string render_key(const Atlas& atlas, const SamplingPlan& plan, int view) {
+    std::string text = "pose-atlas render key 1\n";
+    text += "model " + atlas.model_sha256 + "\n";
+    text += "profile " + atlas.profile_sha256 + "\n";
+    text += "settings " + atlas.settings_sha256 + "\n";
+    text += "renderer " + atlas.renderer + "\n";
+    text += "action " + plan.action + "\n";
+    for (const Sample& s : plan.samples) text += "time " + exact(s.source_time_s) + "\n";
+    text += std::string("view ") + kScreenHeadings[static_cast<std::size_t>(view)] + "\n";
+    return sha256_hex(text);
+}
+
+namespace {
+
+// A cached strip: the poses of one action in one view, side by side. Returns
+// false when the entry is missing or unusable (it is then rendered again).
+bool load_strip(const std::string& path, int cell, int poses, std::vector<Image>& out) {
+    std::vector<std::uint8_t> bytes;
+    try {
+        bytes = read_file(path);
+    } catch (const std::exception&) {
+        return false;
+    }
+    Image strip;
+    try {
+        strip = decode_png(bytes, path);
+    } catch (const ImageError&) {
+        return false;
+    }
+    if (strip.width != cell * poses || strip.height != cell) return false;
+    out.clear();
+    for (int i = 0; i < poses; ++i) out.push_back(crop(strip, i * cell, 0, cell, cell));
+    return true;
+}
+
+ordered_json stats_json(const PaletteStats& s) {
+    return {{"opaque", s.opaque},
+            {"off_palette_before_snap", s.off_palette_before_snap},
+            {"partial_alpha", s.partial_alpha},
+            {"off_palette_output", s.off_palette_output}};
+}
+
+bool load_stats(const std::string& path, PaletteStats& out) {
+    try {
+        const auto j = nlohmann::json::parse(read_text_file(path));
+        out.opaque = j.at("opaque").get<std::int64_t>();
+        out.off_palette_before_snap = j.at("off_palette_before_snap").get<std::int64_t>();
+        out.partial_alpha = j.at("partial_alpha").get<std::int64_t>();
+        out.off_palette_output = j.at("off_palette_output").get<std::int64_t>();
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+void store_strip(const std::string& path, const std::vector<Image>& cells) {
+    const int cell = cells.front().width;
+    Image strip(cell * static_cast<int>(cells.size()), cell);
+    for (std::size_t i = 0; i < cells.size(); ++i) blit(strip, cells[i], static_cast<int>(i) * cell, 0);
+    write_file(path, encode_png(strip));
+}
+
+}  // namespace
+
+Atlas render_atlas(Renderer& renderer, const AtlasJob& job, const std::string& cache_dir) {
+    if (job.actions.empty()) throw std::invalid_argument("render_atlas: no actions");
+    const auto problems = validate_profile(job.profile);
+    if (!problems.empty()) throw ProfileError("profile", problems);
+    std::set<std::string> seen;
+    for (const auto& spec : job.actions) {
+        if (!seen.insert(spec.action).second) {
+            throw std::invalid_argument("action \"" + spec.action + "\" is listed twice");
+        }
+    }
+    const auto settings_problems = validate_render_settings(job.settings);
+    if (!settings_problems.empty()) throw std::invalid_argument("render settings: " + settings_problems.front());
+    const std::vector<std::uint8_t> model_bytes = read_file(job.model_path);
+    const Model model = load_gltf(model_bytes, job.model_path);
+
+    Atlas atlas;
+    atlas.model_path = job.model_path;
+    atlas.model_sha256 = sha256_hex(model_bytes);
+    atlas.profile = job.profile;
+    atlas.profile_sha256 = sha256_hex(profile_to_json(job.profile));
+    atlas.settings = job.settings;
+    atlas.settings_sha256 = sha256_hex(render_settings_json(job.settings));
+    atlas.palette_path = job.palette_path;
+    atlas.erase_colour = job.erase_colour;
+    atlas.renderer = renderer.description();
+    for (const auto& spec : job.actions) {
+        atlas.plans.push_back(plan_sampling(model, spec));
+        atlas.durations_ms.push_back(frame_durations_ms(atlas.plans.back()));
+        for (const Sample& s : atlas.plans.back().samples) {
+            atlas.pose_names.push_back(spec.action + std::to_string(s.pose_index));
+        }
+    }
+    atlas.columns = static_cast<int>(atlas.pose_names.size());
+    atlas_frames(atlas);  // fails early when two frames would share a key
+    atlas.cells.resize(static_cast<std::size_t>(atlas.columns) * kScreenHeadings.size());
+
+    if (!cache_dir.empty()) {
+        std::error_code error;
+        std::filesystem::create_directories(cache_dir, error);
+        if (error) throw std::runtime_error(cache_dir + ": cannot create the cache directory (" + error.message() + ")");
+    }
+    const int cell = job.profile.cell_pixels;
+    int first_column = 0;
+    for (const SamplingPlan& plan : atlas.plans) {
+        const Animation& animation = model.animation(plan.action);
+        std::vector<Pose> poses;  // evaluated on first use
+        for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
+            RenderRecord record{plan.action, kScreenHeadings[static_cast<std::size_t>(view)],
+                                render_key(atlas, plan, view), false, {}};
+            const std::string entry = cache_dir.empty() ? "" : join_path(cache_dir, record.key + ".png");
+            const bool palette = palette_active(job.settings);
+            const std::string stats_entry = cache_dir.empty() ? "" : join_path(cache_dir, record.key + ".palette.json");
+            std::vector<Image> cells;
+            if (!entry.empty() && load_strip(entry, cell, plan.pose_count, cells) &&
+                (!palette || load_stats(stats_entry, record.palette))) {
+                record.reused = true;
+            } else {
+                cells.clear();
+                record.palette = {};
+                if (poses.empty()) {
+                    for (const Sample& s : plan.samples) poses.push_back(evaluate(model, &animation, s.source_time_s));
+                }
+                const CameraGuide guide = camera_guide(job.profile, view);
+                for (const Pose& pose : poses) {
+                    PaletteStats stats;
+                    cells.push_back(renderer.render(model, pose, job.profile, guide, job.settings, &stats));
+                    if (palette) record.palette += stats;
+                }
+                if (!entry.empty()) {
+                    store_strip(entry, cells);
+                    if (palette) write_text_file(stats_entry, stats_json(record.palette).dump() + "\n");
+                }
+            }
+            for (std::size_t i = 0; i < cells.size(); ++i) {
+                atlas.cells[static_cast<std::size_t>(view * atlas.columns + first_column) + i] = std::move(cells[i]);
+            }
+            atlas.renders.push_back(std::move(record));
+        }
+        first_column += plan.pose_count;
+    }
+    return atlas;
+}
+
+PaletteStats Atlas::palette_total() const {
+    PaletteStats total;
+    for (const RenderRecord& r : renders) total += r.palette;
+    return total;
+}
+
+std::string palette_summary(const Atlas& atlas) {
+    const PaletteStats t = atlas.palette_total();
+    return "palette: " + to_string(atlas.settings.palette_stage) + ", " + std::to_string(atlas.settings.palette.size()) +
+           " colours: " + std::to_string(t.opaque) + " opaque pixels, " + std::to_string(t.off_palette_before_snap) +
+           " off-palette before the final snap, " + std::to_string(t.partial_alpha) +
+           " with partial alpha before thresholding, " + std::to_string(t.off_palette_output) +
+           " off-palette in the output";
+}
+
+Image composite_cell(const Image& render, const Image& correction, const Rgb8& erase_colour) {
+    if (correction.width == 0) return render;
+    if (correction.width != render.width || correction.height != render.height) {
+        throw std::invalid_argument("composite_cell: the correction is not the size of the render");
+    }
+    Image out = render;
+    for (std::size_t i = 0; i < out.rgba.size(); i += 4) {
+        const std::uint8_t* s = correction.rgba.data() + i;
+        std::uint8_t* d = out.rgba.data() + i;
+        const std::uint32_t sa = s[3];
+        if (sa == 0) continue;
+        if (sa == 255) {
+            if (s[0] == erase_colour[0] && s[1] == erase_colour[1] && s[2] == erase_colour[2]) {
+                std::fill(d, d + 4, std::uint8_t{0});
+            } else {
+                std::copy(s, s + 4, d);
+            }
+            continue;
+        }
+        // Straight-alpha "over" in integers (weights scaled by 255 * 255).
+        const std::uint32_t source_weight = sa * 255;
+        const std::uint32_t target_weight = std::uint32_t{d[3]} * (255 - sa);
+        const std::uint32_t total = source_weight + target_weight;
+        for (int c = 0; c < 3; ++c) {
+            d[c] = static_cast<std::uint8_t>((s[c] * source_weight + d[c] * target_weight + total / 2) / total);
+        }
+        d[3] = static_cast<std::uint8_t>((total + 127) / 255);
+    }
+    return out;
+}
+
+Image output_cell(const Atlas& atlas, int view, int column) {
+    const std::size_t index = static_cast<std::size_t>(view * atlas.columns + column);
+    if (index >= atlas.corrections.size()) return atlas.cell(view, column);
+    return composite_cell(atlas.cell(view, column), atlas.corrections[index].image, atlas.erase_colour);
+}
+
+Image atlas_image(const Atlas& atlas) {
+    const int cell = atlas.profile.cell_pixels;
+    const int views = static_cast<int>(kScreenHeadings.size());
+    Image image(cell * atlas.columns, cell * views);
+    for (int view = 0; view < views; ++view) {
+        for (int column = 0; column < atlas.columns; ++column) {
+            blit(image, output_cell(atlas, view, column), column * cell, view * cell);
+        }
+    }
+    return image;
+}
+
+namespace {
+
+
+// One tag per state, "<action>.<view>" over that action's poses in that view,
+// view by view and in action order: the same list in atlas.json and
+// atlas.aseprite.
+std::vector<AsepriteTag> state_tags(const Atlas& atlas) {
+    std::vector<AsepriteTag> tags;
+    for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
+        int first = 0;
+        for (const SamplingPlan& plan : atlas.plans) {
+            const int from = view * atlas.columns + first;
+            tags.push_back({plan.action + "." + kScreenHeadings[static_cast<std::size_t>(view)], from,
+                            from + plan.pose_count - 1});
+            first += plan.pose_count;
+        }
+    }
+    return tags;
+}
+
+}  // namespace
+
+std::vector<AtlasFrame> atlas_frames(const Atlas& atlas) {
+    std::vector<AtlasFrame> out;
+    std::map<std::string, std::size_t> seen;
+    for (int view = 0; view < static_cast<int>(kScreenHeadings.size()); ++view) {
+        const std::string heading = kScreenHeadings[static_cast<std::size_t>(view)];
+        int column = 0;
+        for (std::size_t a = 0; a < atlas.plans.size(); ++a) {
+            const SamplingPlan& plan = atlas.plans[a];
+            for (int pose = 0; pose < plan.pose_count; ++pose, ++column) {
+                const double time = plan.samples[static_cast<std::size_t>(pose)].source_time_s;
+                AtlasFrame frame{plan.action + std::to_string(pose) + "." + heading,
+                                 frame_key(plan.action, heading, time), a, pose, view, column};
+                const auto inserted = seen.emplace(frame.key, out.size());
+                if (!inserted.second) {
+                    const AtlasFrame& other = out[inserted.first->second];
+                    const double other_time =
+                        atlas.plans[other.action].samples[static_cast<std::size_t>(other.pose)].source_time_s;
+                    throw AtlasError("frames " + other.name + " and " + frame.name + " would share the key \"" +
+                                     frame.key + "\": their source times (" + exact(other_time) + " s and " +
+                                     exact(time) + " s) are equal to the microsecond; sample fewer poses or a "
+                                     "longer source range");
+                }
+                out.push_back(std::move(frame));
+            }
+        }
+    }
+    return out;
+}
+
+std::string frame_input_sha256(const Atlas& atlas, const AtlasFrame& frame) {
+    const SamplingPlan& plan = atlas.plans[frame.action];
+    return frame_input_sha256(atlas.model_sha256, atlas.profile_sha256, atlas.settings_sha256, atlas.renderer,
+                              plan.action, kScreenHeadings[static_cast<std::size_t>(frame.view)],
+                              plan.samples[static_cast<std::size_t>(frame.pose)].source_time_s);
+}
+
+std::string atlas_metadata_json(const Atlas& atlas, const std::string& image_file) {
+    const int cell = atlas.profile.cell_pixels;
+    ordered_json frames = ordered_json::array();
+    ordered_json tags = ordered_json::array();
+    for (const AtlasFrame& f : atlas_frames(atlas)) {
+        frames.push_back({{"filename", f.name},
+                          {"frame", rect(f.column * cell, f.view * cell, cell, cell)},
+                          {"rotated", false},
+                          {"trimmed", false},
+                          {"spriteSourceSize", rect(0, 0, cell, cell)},
+                          {"sourceSize", {{"w", cell}, {"h", cell}}},
+                          {"duration", atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)]}});
+    }
+    for (const AsepriteTag& tag : state_tags(atlas)) {
+        tags.push_back({{"name", tag.name}, {"from", tag.from}, {"to", tag.to}, {"direction", "forward"},
+                        {"color", "#000000ff"}});
+    }
+    ordered_json meta;
+    meta["app"] = "pose-atlas";
+    meta["version"] = version();
+    meta["image"] = image_file;
+    meta["format"] = "RGBA8888";
+    meta["size"] = {{"w", cell * atlas.columns}, {"h", cell * static_cast<int>(kScreenHeadings.size())}};
+    meta["scale"] = "1";
+    meta["frameTags"] = tags;
+    meta["layers"] = ordered_json::array({{{"name", "Render"}, {"opacity", 255}, {"blendMode", "normal"}}});
+    meta["slices"] = ordered_json::array(
+        {{{"name", "foot"},
+          {"color", "#0000ffff"},
+          {"keys",
+           ordered_json::array({{{"frame", 0},
+                                 {"bounds", rect(0, 0, cell, cell)},
+                                 {"pivot",
+                                  {{"x", atlas.profile.ground_pivot_pixels[0]},
+                                   {"y", atlas.profile.ground_pivot_pixels[1]}}}}})}}});
+    ordered_json root;
+    root["frames"] = frames;
+    root["meta"] = meta;
+    return root.dump(1) + "\n";
+}
+
+AsepriteDocument aseprite_document(const Atlas& atlas) {
+    const int cell = atlas.profile.cell_pixels;
+    AsepriteDocument doc;
+    doc.width = cell;
+    doc.height = cell;
+    doc.layers = {kAsepriteBaseLayer, kAsepriteCorrectionsLayer};
+    const std::vector<AtlasFrame> frames = atlas_frames(atlas);
+    if (!atlas.corrections.empty()) {
+        if (atlas.corrections.size() != frames.size()) throw AtlasError("corrections: expected one entry per frame");
+        for (const FrameCorrection& c : atlas.corrections) {
+            if (c.image.width != 0 && (c.image.width != cell || c.image.height != cell)) {
+                throw AtlasError("corrections: a correction is not cell-sized");
+            }
+        }
+    }
+    for (const AtlasFrame& f : frames) {
+        AsepriteFrame frame;
+        frame.duration_ms = atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)];
+        AsepriteCel cel;
+        cel.image = atlas.cell(f.view, f.column);
+        cel.user_text = f.key;
+        frame.cels.push_back(std::move(cel));
+        const std::size_t index = doc.frames.size();
+        if (index < atlas.corrections.size() && atlas.corrections[index].image.width > 0) {
+            const FrameCorrection& correction = atlas.corrections[index];
+            const Bounds b = alpha_bounds(correction.image);
+            if (!b.empty()) {
+                AsepriteCel painted;
+                painted.layer = 1;
+                painted.x = b.x0;
+                painted.y = b.y0;
+                painted.image = crop(correction.image, b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+                if (correction.stale) {
+                    painted.user_text = kStaleCorrectionText;
+                    painted.user_colour = kStaleCorrectionColour;
+                }
+                frame.cels.push_back(std::move(painted));
+            }
+        }
+        doc.frames.push_back(std::move(frame));
+    }
+    doc.tags = state_tags(atlas);
+    AsepriteSliceKey key;
+    key.width = cell;
+    key.height = cell;
+    key.pivot = std::array<int, 2>{atlas.profile.ground_pivot_pixels[0], atlas.profile.ground_pivot_pixels[1]};
+    doc.slices.push_back({"foot", {key}});
+    return doc;
+}
+
+std::vector<std::string> export_atlas(const Atlas& atlas, const std::string& directory) {
+    const auto png = encode_png(atlas_image(atlas));
+    const std::string metadata = atlas_metadata_json(atlas, kAtlasPng);
+    write_file(join_path(directory, kAtlasPng), png);
+    write_text_file(join_path(directory, kAtlasJson), metadata);
+    const auto aseprite = write_aseprite(aseprite_document(atlas));
+    write_file(join_path(directory, kAtlasAseprite), aseprite);
+
+    const Profile& p = atlas.profile;
+    ordered_json c;
+    c["format"] = kContractFormat;
+    c["version"] = kContractVersion;
+    c["tool"] = "pose-atlas " + version();
+    c["renderer"] = atlas.renderer;
+    c["sources"] = {
+        {"model", {{"path", atlas.model_path}, {"sha256", atlas.model_sha256}}},
+        {"profile", {{"id", p.id}, {"sha256", atlas.profile_sha256}, {"values", ordered_json::parse(profile_to_json(p))}}},
+        {"render_settings",
+         {{"sha256", atlas.settings_sha256}, {"values", ordered_json::parse(render_settings_json(atlas.settings))}}}};
+    if (!atlas.settings.palette.empty()) {
+        ordered_json colours = ordered_json::array();
+        for (const Rgb8& colour : atlas.settings.palette) colours.push_back(hex_colour(colour));
+        c["sources"]["palette"] = {{"path", atlas.palette_path},
+                                   {"sha256", palette_sha256(atlas.settings.palette)},
+                                   {"colors", colours}};
+    }
+    c["erase_colour"] = hex_colour(atlas.erase_colour);
+    c["cell"] = {p.cell_pixels, p.cell_pixels};
+    c["pivot"] = {p.ground_pivot_pixels[0], p.ground_pivot_pixels[1]};
+    c["meters_per_pixel"] = p.meters_per_pixel;
+    c["cell_span_m"] = p.cell_span_m();
+    c["elevation_degrees"] = p.elevation_degrees;
+    c["supersampling"] = p.supersampling;
+    c["resampling_filter"] = to_string(p.resampling_filter);
+    c["view_count"] = kScreenHeadings.size();
+    c["views"] = kScreenHeadings;
+    c["columns"] = atlas.columns;
+    c["pose_names"] = atlas.pose_names;
+
+    ordered_json actions = ordered_json::array();
+    int first_column = 0;
+    for (std::size_t a = 0; a < atlas.plans.size(); ++a) {
+        const SamplingPlan& plan = atlas.plans[a];
+        ordered_json renders = ordered_json::object();
+        for (const RenderRecord& r : atlas.renders) {
+            if (r.action == plan.action) renders[r.view] = r.key;
+        }
+        int cycle_ms = 0;
+        for (int d : atlas.durations_ms[a]) cycle_ms += d;
+        actions.push_back(
+            {{"name", plan.action},
+             {"first_column", first_column},
+             {"pose_count", plan.pose_count},
+             {"end_point", to_string(plan.endpoint)},
+             {"clocks",
+              {{"source", {{"start_s", plan.source_start_s}, {"end_s", plan.source_end_s}, {"step_s", plan.source_step_s}}},
+               {"pose", {{"count", plan.pose_count}, {"intervals", plan.intervals}}},
+               {"runtime",
+                {{"cadence", to_string(plan.cadence.kind)},
+                 {"playback_rate", optional_number(plan.playback_rate)},
+                 {"cycle_ms", optional_number(plan.runtime_cycle_ms)},
+                 {"cycle_m", optional_number(plan.runtime_cycle_m)},
+                 {"frame_cycle_ms", cycle_ms}}}}},
+             {"loop_closure",
+              {{"max_position_delta_m", plan.loop_closure.max_position_delta_m},
+               {"max_rotation_delta_degrees", plan.loop_closure.max_rotation_delta_degrees}}},
+             {"warnings", plan.warnings},
+             {"render_keys", renders}});
+        first_column += plan.pose_count;
+    }
+    c["actions"] = actions;
+
+    ordered_json frames = ordered_json::array();
+    for (const AtlasFrame& f : atlas_frames(atlas)) {
+        const SamplingPlan& plan = atlas.plans[f.action];
+        const Sample& s = plan.samples[static_cast<std::size_t>(f.pose)];
+        const Vec2 forward = projected_forward(p, camera_guide(p, f.view));
+        const double length = std::hypot(forward.x, forward.y);
+        frames.push_back({{"name", f.name},
+                          {"key", f.key},
+                          {"action", plan.action},
+                          {"pose_index", f.pose},
+                          {"view", kScreenHeadings[static_cast<std::size_t>(f.view)]},
+                          {"source_time_s", s.source_time_s},
+                          {"runtime_start_ms", optional_number(s.runtime_start_ms)},
+                          {"duration_ms", atlas.durations_ms[f.action][static_cast<std::size_t>(f.pose)]},
+                          {"projected_heading", {forward.x / length, forward.y / length}},
+                          {"input_sha256", frame_input_sha256(atlas, f)},
+                          {"render_sha256", sha256_hex(atlas.cell(f.view, f.column).rgba)}});
+    }
+    c["frames"] = frames;
+    if (palette_active(atlas.settings)) {
+        ordered_json renders = ordered_json::array();
+        for (const RenderRecord& r : atlas.renders) {
+            ordered_json item = {{"action", r.action}, {"view", r.view}};
+            item.update(stats_json(r.palette));
+            renders.push_back(item);
+        }
+        c["palette_report"] = {
+            {"stage", to_string(atlas.settings.palette_stage)},
+            {"alpha_threshold", atlas.settings.alpha_threshold},
+            {"palette_sha256", palette_sha256(atlas.settings.palette)},
+            {"outline_colour", atlas.settings.style.outline ? ordered_json(hex_colour(atlas.settings.style.outline_colour))
+                                                            : ordered_json(nullptr)},
+            {"renders", renders},
+            {"total", stats_json(atlas.palette_total())}};
+    }
+    c["files"] = {{"atlas", {{"file", kAtlasPng}, {"sha256", sha256_hex(png)}}},
+                  {"metadata", {{"file", kAtlasJson}, {"sha256", sha256_hex(metadata)}}},
+                  {"aseprite", {{"file", kAtlasAseprite}, {"sha256", sha256_hex(aseprite)}}}};
+    write_text_file(join_path(directory, kContractJson), c.dump(2) + "\n");
+    return {kAtlasPng, kAtlasJson, kAtlasAseprite, kContractJson};
+}
+
+}  // namespace pose_atlas

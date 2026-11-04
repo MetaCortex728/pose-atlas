@@ -1,0 +1,19 @@
+{
+  "format": "pose-atlas-profile",
+  "version": 1,
+  "id": "quarter-view-30-gltf",
+  "description": "30-degree orthographic quarter view with the camera values of the October 2026 prototype (prototype/quarter-view-profile.json). Model axes of glTF: forward +Z, up +Y.",
+  "projection": "orthographic",
+  "elevation_degrees": 30,
+  "base_azimuth_degrees": 45,
+  "camera_distance_m": 8,
+  "screen_headings": ["e", "ne", "n", "nw", "w", "sw", "s", "se"],
+  "character_forward": "+Z",
+  "world_up": "+Y",
+  "cell_pixels": 256,
+  "ground_pivot_pixels": [128, 208],
+  "meters_per_pixel": 0.010833333333333334,
+  "supersampling": 4,
+  "resampling_filter": "mitchell",
+  "zoom_set": [1, 2, 3]
+}

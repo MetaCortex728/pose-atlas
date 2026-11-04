@@ -14,7 +14,7 @@ Done when a procedurally generated test rig with two actions becomes a validated
 
 ## Stage 2: quality and review
 
-6. **Styles:** palette ramps and outline controls, recorded in the output (about 6 hours).
+6. **Colour from the approved illustration:** register the character's approved front and back illustrations to the model's rest pose with landmarks, extract per-region palettes and tone ramps from them, render with those palettes (model textures only separate regions), add outline controls, and report per-region colour differences between each rendered view and the illustration. The illustrations are user input and stay out of the repository; tests use generated ones (about 8 to 10 hours).
 7. **Motion diagnostics:** velocity continuity across loops and transitions, foot contact and sliding (about 6 hours).
 8. **Review page:** a self-contained web page showing states side by side at native size over user-supplied backgrounds at several zoom levels (about 5 hours).
 9. **Harmony measurements:** apparent pixel density, palette distance and edge treatment against scene images (about 4 hours).

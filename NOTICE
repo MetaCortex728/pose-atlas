@@ -1,0 +1,29 @@
+pose-atlas
+Copyright 2026 the pose-atlas authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes the following third-party code under third_party/. Each component
+keeps its own licence file next to its files and is distributed under that
+licence.
+
+- doctest 2.5.3 by Viktor Kirilov, https://github.com/doctest/doctest
+  MIT licence, third_party/doctest/LICENSE.txt. Unit tests only.
+  doctest.h is an unmodified copy of the upstream single header.
+
+- JSON for Modern C++ 3.11.3 by Niels Lohmann, https://github.com/nlohmann/json
+  MIT licence, third_party/nlohmann_json/LICENSE.MIT.
+  include/nlohmann/json.hpp is an unmodified copy of the single header
+  released as json.hpp with v3.11.3.
+
+- cgltf 1.15 by Johannes Kuhlmann, https://github.com/jkuhlmann/cgltf
+  MIT licence, third_party/cgltf/LICENSE.
+  cgltf.h is an unmodified copy of the header from the v1.15 release;
+  cgltf_impl.c only compiles its implementation.
+
+- stb_image 2.30 and stb_image_write 1.16 by Sean Barrett,
+  https://github.com/nothings/stb (commit d14d46f6b44456eb88beac58cba833a4135d4c89)
+  MIT licence or public domain, at your choice; third_party/stb/LICENSE.
+  stb_image.h and stb_image_write.h are unmodified copies; stb_impl.c only
+  compiles their PNG, JPEG and zlib parts (PNG/JPEG decoding of the atlas and
+  glTF base colour textures, PNG encoding).

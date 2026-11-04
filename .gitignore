@@ -2,3 +2,5 @@ build/
 out/
 __pycache__/
 *.pyc
+compile_commands.json
+.cache/
